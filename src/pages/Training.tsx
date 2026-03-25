@@ -207,7 +207,7 @@ export default function TrainingPage() {
           <div className="chart-header stacked compact-chart-header">
             <div className="chart-header-top">
               <div className="chart-title">{symbol} 永续 · {interval}</div>
-              <div className="chart-note">时间轴已隐藏 · v1.2.9 紧凑布局版</div>
+              <div className="chart-note">时间轴已隐藏 · v1.2.10 窗口比例微调版</div>
             </div>
 
             <div className="loaded-indicators-bar compact-loaded">
