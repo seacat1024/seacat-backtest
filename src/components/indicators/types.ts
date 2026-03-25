@@ -5,7 +5,7 @@ export type IndicatorLibraryItem = {
   kind: 'main' | 'sub'
 }
 
-export type MALineConfig = {
+export type MultiLineConfig = {
   id: number
   length: number
   color: string
@@ -14,5 +14,6 @@ export type MALineConfig = {
 
 export type IndicatorCenterState = {
   selectedIds: string[]
-  maLines: MALineConfig[]
+  maLines: MultiLineConfig[]
+  emaLines: MultiLineConfig[]
 }

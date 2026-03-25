@@ -30,6 +30,27 @@ function calcMA(values: number[], length: number): Array<number | null> {
   })
 }
 
+function calcEMA(values: number[], length: number): Array<number | null> {
+  if (length <= 0) return values.map(() => null)
+  const k = 2 / (length + 1)
+  const out: Array<number | null> = []
+  let ema: number | null = null
+  values.forEach((value, i) => {
+    if (i + 1 < length) {
+      out.push(null)
+      return
+    }
+    if (ema === null) {
+      const seed = values.slice(i + 1 - length, i + 1).reduce((a, b) => a + b, 0) / length
+      ema = seed
+    } else {
+      ema = value * k + ema * (1 - k)
+    }
+    out.push(ema)
+  })
+  return out
+}
+
 function buildPolylinePoints(
   series: Array<number | null>,
   scaleY: (v: number) => number,
@@ -50,14 +71,17 @@ function KlineMockChart({ state }: { state: IndicatorCenterState }) {
   const closes = bars.map((b) => b.close)
 
   const maSeries = state.selectedIds.includes('MA')
-    ? state.maLines
-        .filter(line => line.length > 0)
-        .map(line => ({ ...line, values: calcMA(closes, line.length) }))
+    ? state.maLines.filter((line) => line.length > 0).map((line) => ({ ...line, kind: 'MA' as const, values: calcMA(closes, line.length) }))
     : []
 
+  const emaSeries = state.selectedIds.includes('EMA')
+    ? state.emaLines.filter((line) => line.length > 0).map((line) => ({ ...line, kind: 'EMA' as const, values: calcEMA(closes, line.length) }))
+    : []
+
+  const allSeries = [...maSeries, ...emaSeries]
   const allHighs = bars.map((b) => b.high)
   const allLows = bars.map((b) => b.low)
-  maSeries.forEach((series) => {
+  allSeries.forEach((series) => {
     series.values.forEach((v) => {
       if (typeof v === 'number') {
         allHighs.push(v)
@@ -82,9 +106,9 @@ function KlineMockChart({ state }: { state: IndicatorCenterState }) {
         return <line key={i} x1="0" y1={y} x2={width} y2={y} stroke="#1f2937" strokeWidth="1" />
       })}
 
-      {maSeries.map(line => (
+      {allSeries.map((line) => (
         <polyline
-          key={line.id}
+          key={`${line.kind}-${line.id}`}
           points={buildPolylinePoints(line.values, scaleY, xForIndex)}
           fill="none"
           stroke={line.color}
@@ -120,7 +144,7 @@ export default function TrainingPage() {
   const [interval, setInterval] = useState('15m')
   const [open, setOpen] = useState(false)
   const [centerState, setCenterState] = useState<IndicatorCenterState>({
-    selectedIds: ['MA'],
+    selectedIds: ['MA', 'EMA'],
     maLines: [
       { id: 1, length: 7, color: '#ffffff', width: 1 },
       { id: 2, length: 30, color: '#f0b90b', width: 2 },
@@ -131,13 +155,24 @@ export default function TrainingPage() {
       { id: 7, length: 0, color: '#60a5fa', width: 2 },
       { id: 8, length: 0, color: '#f59e0b', width: 2 },
       { id: 9, length: 0, color: '#9333ea', width: 2 },
-      { id: 10, length: 0, color: '#ec4899', width: 2 }
-    ]
+      { id: 10, length: 0, color: '#ec4899', width: 2 },
+    ],
+    emaLines: [
+      { id: 1, length: 7, color: '#ffffff', width: 1 },
+      { id: 2, length: 30, color: '#f0b90b', width: 2 },
+      { id: 3, length: 0, color: '#a855f7', width: 2 },
+      { id: 4, length: 0, color: '#38bdf8', width: 2 },
+      { id: 5, length: 0, color: '#22c55e', width: 2 },
+      { id: 6, length: 0, color: '#ef4444', width: 2 },
+      { id: 7, length: 0, color: '#60a5fa', width: 2 },
+      { id: 8, length: 0, color: '#f59e0b', width: 2 },
+      { id: 9, length: 0, color: '#9333ea', width: 2 },
+      { id: 10, length: 0, color: '#ec4899', width: 2 },
+    ],
   })
 
-  const activeMAs = centerState.selectedIds.includes('MA')
-    ? centerState.maLines.filter(line => line.length > 0)
-    : []
+  const activeMAs = centerState.selectedIds.includes('MA') ? centerState.maLines.filter((line) => line.length > 0) : []
+  const activeEMAs = centerState.selectedIds.includes('EMA') ? centerState.emaLines.filter((line) => line.length > 0) : []
 
   return (
     <div className="app-shell">
@@ -180,20 +215,25 @@ export default function TrainingPage() {
           <div className="chart-header stacked">
             <div className="chart-header-top">
               <div className="chart-title">{symbol} 永续 · {interval}</div>
-              <div className="chart-note">时间轴已隐藏 · v1.2.7 指标中心交互版</div>
+              <div className="chart-note">时间轴已隐藏 · v1.2.8 EMA 多线接入版</div>
             </div>
 
             <div className="loaded-indicators-bar">
-              {activeMAs.length === 0 ? (
-                <div className="empty-inline">当前未显示 MA。</div>
-              ) : (
-                activeMAs.map(line => (
-                  <div key={line.id} className="indicator-chip passive">
-                    <span className="dot" style={{ background: line.color }} />
-                    <span>MA({line.length})</span>
-                  </div>
-                ))
-              )}
+              {activeMAs.map((line) => (
+                <div key={`ma-${line.id}`} className="indicator-chip passive">
+                  <span className="dot" style={{ background: line.color }} />
+                  <span>MA({line.length})</span>
+                </div>
+              ))}
+              {activeEMAs.map((line) => (
+                <div key={`ema-${line.id}`} className="indicator-chip passive">
+                  <span className="dot" style={{ background: line.color }} />
+                  <span>EMA({line.length})</span>
+                </div>
+              ))}
+              {activeMAs.length === 0 && activeEMAs.length === 0 ? (
+                <div className="empty-inline">当前未显示 MA / EMA。</div>
+              ) : null}
             </div>
           </div>
 

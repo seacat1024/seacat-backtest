@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react'
-import type { IndicatorCenterState, IndicatorLibraryItem, MALineConfig } from './types'
+import type { IndicatorCenterState, IndicatorLibraryItem, MultiLineConfig } from './types'
 
 const COLORS = ['#ef4444', '#22c55e', '#60a5fa', '#a78bfa', '#ffffff', '#f0b90b', '#f472b6', '#38bdf8']
-const WIDTHS = [1,2,3,4,5,6]
+const WIDTHS = [1, 2, 3, 4, 5, 6]
 
 type Props = {
   open: boolean
@@ -20,6 +20,55 @@ const LIBRARY: IndicatorLibraryItem[] = [
   { id: 'KDJ', label: 'KDJ', desc: '随机摆动指标', kind: 'sub' },
 ]
 
+function SeriesEditor({
+  prefix,
+  lines,
+  updateLine,
+}: {
+  prefix: string
+  lines: MultiLineConfig[]
+  updateLine: (id: number, patch: Partial<MultiLineConfig>) => void
+}) {
+  return (
+    <div className="ma-grid">
+      {lines.map((line, i) => (
+        <div className="ma-row" key={line.id}>
+          <div className="ma-label">{prefix}{i + 1}</div>
+          <input
+            className="param-input"
+            type="text"
+            inputMode="numeric"
+            value={line.length === 0 ? '' : String(line.length)}
+            onChange={(e) => {
+              const raw = e.target.value.replace(/[^0-9]/g, '')
+              updateLine(line.id, { length: raw === '' ? 0 : Number(raw) })
+            }}
+            placeholder="0"
+          />
+          <select
+            className="param-select"
+            value={line.width}
+            onChange={(e) => updateLine(line.id, { width: Number(e.target.value) })}
+          >
+            {WIDTHS.map((w) => <option key={w} value={w}>{w}</option>)}
+          </select>
+          <div className="swatch-line">
+            {COLORS.map((color) => (
+              <button
+                key={color}
+                className="swatch-dot"
+                style={{ background: color, outline: line.color === color ? '2px solid #fff' : 'none' }}
+                onClick={() => updateLine(line.id, { color })}
+              />
+            ))}
+          </div>
+        </div>
+      ))}
+      <div className="hint-line">填 0 或留空 = 不显示；填数值 = 显示。</div>
+    </div>
+  )
+}
+
 export default function IndicatorCenterModal({ open, value, onClose, onSave }: Props) {
   const [leftTab, setLeftTab] = useState<'all' | 'selected'>('all')
   const [activeId, setActiveId] = useState<string>('MA')
@@ -28,30 +77,28 @@ export default function IndicatorCenterModal({ open, value, onClose, onSave }: P
   const visibleList = useMemo(() => {
     return leftTab === 'all'
       ? LIBRARY
-      : LIBRARY.filter(item => draft.selectedIds.includes(item.id))
+      : LIBRARY.filter((item) => draft.selectedIds.includes(item.id))
   }, [leftTab, draft.selectedIds])
 
   if (!open) return null
 
   const toggleSelected = (id: string) => {
-    setDraft(prev => {
+    setDraft((prev) => {
       const exists = prev.selectedIds.includes(id)
       return {
         ...prev,
-        selectedIds: exists ? prev.selectedIds.filter(x => x !== id) : [...prev.selectedIds, id]
+        selectedIds: exists ? prev.selectedIds.filter((x) => x !== id) : [...prev.selectedIds, id],
       }
     })
     setActiveId(id)
   }
 
-  const updateMALine = (idx: number, patch: Partial<MALineConfig>) => {
-    setDraft(prev => ({
+  const updateLines = (key: 'maLines' | 'emaLines', id: number, patch: Partial<MultiLineConfig>) => {
+    setDraft((prev) => ({
       ...prev,
-      maLines: prev.maLines.map(line => line.id === idx ? { ...line, ...patch } : line)
+      [key]: prev[key].map((line) => (line.id === id ? { ...line, ...patch } : line)),
     }))
   }
-
-  const isSelected = (id: string) => draft.selectedIds.includes(id)
 
   return (
     <div className="center-mask" onClick={onClose}>
@@ -70,14 +117,14 @@ export default function IndicatorCenterModal({ open, value, onClose, onSave }: P
           <section className="center-list">
             <div className="search-lite">搜索指标</div>
             <div className="indicator-list2">
-              {visibleList.map(item => (
+              {visibleList.map((item) => (
                 <button
                   key={item.id}
                   className={activeId === item.id ? 'indicator-item2 active' : 'indicator-item2'}
                   onClick={() => setActiveId(item.id)}
                 >
                   <div className="indicator-check" onClick={(e) => { e.stopPropagation(); toggleSelected(item.id) }}>
-                    {isSelected(item.id) ? '✓' : ''}
+                    {draft.selectedIds.includes(item.id) ? '✓' : ''}
                   </div>
                   <div className="indicator-badge">{item.label}</div>
                   <div className="indicator-meta">
@@ -96,44 +143,11 @@ export default function IndicatorCenterModal({ open, value, onClose, onSave }: P
             </div>
 
             {activeId === 'MA' ? (
-              <div className="ma-grid">
-                {draft.maLines.map((line, i) => (
-                  <div className="ma-row" key={line.id}>
-                    <div className="ma-label">MA{i+1}</div>
-                    <input
-                      className="param-input"
-                      type="text"
-                      inputMode="numeric"
-                      value={line.length === 0 ? '' : String(line.length)}
-                      onChange={(e) => {
-                        const raw = e.target.value.replace(/[^0-9]/g, '')
-                        updateMALine(line.id, { length: raw === '' ? 0 : Number(raw) })
-                      }}
-                      placeholder="0"
-                    />
-                    <select
-                      className="param-select"
-                      value={line.width}
-                      onChange={(e) => updateMALine(line.id, { width: Number(e.target.value) })}
-                    >
-                      {WIDTHS.map(w => <option key={w} value={w}>{w}</option>)}
-                    </select>
-                    <div className="swatch-line">
-                      {COLORS.map(color => (
-                        <button
-                          key={color}
-                          className="swatch-dot"
-                          style={{ background: color, outline: line.color === color ? '2px solid #fff' : 'none' }}
-                          onClick={() => updateMALine(line.id, { color })}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                ))}
-                <div className="hint-line">填 0 或留空 = 不显示；填数值 = 显示。</div>
-              </div>
+              <SeriesEditor prefix="MA" lines={draft.maLines} updateLine={(id, patch) => updateLines('maLines', id, patch)} />
+            ) : activeId === 'EMA' ? (
+              <SeriesEditor prefix="EMA" lines={draft.emaLines} updateLine={(id, patch) => updateLines('emaLines', id, patch)} />
             ) : (
-              <div className="coming-soon">这一版先把 MA 交互做成你要的样子。EMA / MACD / RSI / KDJ 下一版继续接。</div>
+              <div className="coming-soon">这一版已接通 MA + EMA。RSI / MACD / KDJ 下一版继续接副图。</div>
             )}
           </section>
         </div>
