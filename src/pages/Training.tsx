@@ -1,9 +1,6 @@
 import { useMemo, useState } from 'react'
-import { createDefaultIndicator } from '../components/indicators/indicatorDefaults'
-import IndicatorEditModal from '../components/indicators/IndicatorEditModal'
-import IndicatorPickerModal from '../components/indicators/IndicatorPickerModal'
-import type { IndicatorInstance, IndicatorType } from '../components/indicators/indicatorTypes'
-import { formatIndicatorName } from '../components/indicators/indicatorUtils'
+import IndicatorCenterModal from '../components/indicators/IndicatorCenterModal'
+import type { IndicatorCenterState } from '../components/indicators/types'
 
 type Bar = { open: number; high: number; low: number; close: number }
 
@@ -27,30 +24,10 @@ function generateMockBars(count = 120): Bar[] {
 
 function calcMA(values: number[], length: number): Array<number | null> {
   return values.map((_, i) => {
-    if (i + 1 < length) return null
+    if (length <= 0 || i + 1 < length) return null
     const slice = values.slice(i + 1 - length, i + 1)
     return slice.reduce((a, b) => a + b, 0) / length
   })
-}
-
-function calcEMA(values: number[], length: number): Array<number | null> {
-  const k = 2 / (length + 1)
-  const out: Array<number | null> = []
-  let ema: number | null = null
-  values.forEach((value, i) => {
-    if (i + 1 < length) {
-      out.push(null)
-      return
-    }
-    if (ema === null) {
-      const seed = values.slice(i + 1 - length, i + 1).reduce((a, b) => a + b, 0) / length
-      ema = seed
-    } else {
-      ema = value * k + ema * (1 - k)
-    }
-    out.push(ema)
-  })
-  return out
 }
 
 function buildPolylinePoints(
@@ -64,7 +41,7 @@ function buildPolylinePoints(
     .join(' ')
 }
 
-function KlineMockChart({ indicators }: { indicators: IndicatorInstance[] }) {
+function KlineMockChart({ state }: { state: IndicatorCenterState }) {
   const bars = useMemo(() => generateMockBars(100), [])
   const width = 1100
   const height = 420
@@ -72,17 +49,15 @@ function KlineMockChart({ indicators }: { indicators: IndicatorInstance[] }) {
   const candleGap = 10.5
   const closes = bars.map((b) => b.close)
 
-  const overlaySeries = indicators
-    .filter((item) => item.visible && item.panel === 'main' && (item.type === 'MA' || item.type === 'EMA'))
-    .map((item) => {
-      const length = Number(item.params.length ?? 20)
-      const values = item.type === 'MA' ? calcMA(closes, length) : calcEMA(closes, length)
-      return { item, values }
-    })
+  const maSeries = state.selectedIds.includes('MA')
+    ? state.maLines
+        .filter(line => line.length > 0)
+        .map(line => ({ ...line, values: calcMA(closes, line.length) }))
+    : []
 
   const allHighs = bars.map((b) => b.high)
   const allLows = bars.map((b) => b.low)
-  overlaySeries.forEach((series) => {
+  maSeries.forEach((series) => {
     series.values.forEach((v) => {
       if (typeof v === 'number') {
         allHighs.push(v)
@@ -107,13 +82,13 @@ function KlineMockChart({ indicators }: { indicators: IndicatorInstance[] }) {
         return <line key={i} x1="0" y1={y} x2={width} y2={y} stroke="#1f2937" strokeWidth="1" />
       })}
 
-      {overlaySeries.map(({ item, values }) => (
+      {maSeries.map(line => (
         <polyline
-          key={item.id}
-          points={buildPolylinePoints(values, scaleY, xForIndex)}
+          key={line.id}
+          points={buildPolylinePoints(line.values, scaleY, xForIndex)}
           fill="none"
-          stroke={item.style.color || '#60a5fa'}
-          strokeWidth={item.style.width || 2}
+          stroke={line.color}
+          strokeWidth={line.width}
           strokeLinecap="round"
           strokeLinejoin="round"
           opacity="0.95"
@@ -143,25 +118,26 @@ function KlineMockChart({ indicators }: { indicators: IndicatorInstance[] }) {
 export default function TrainingPage() {
   const [symbol, setSymbol] = useState('BTCUSDT')
   const [interval, setInterval] = useState('15m')
-  const [instances, setInstances] = useState<IndicatorInstance[]>([])
-  const [pickerOpen, setPickerOpen] = useState(false)
-  const [editing, setEditing] = useState<IndicatorInstance | null>(null)
+  const [open, setOpen] = useState(false)
+  const [centerState, setCenterState] = useState<IndicatorCenterState>({
+    selectedIds: ['MA'],
+    maLines: [
+      { id: 1, length: 7, color: '#ffffff', width: 1 },
+      { id: 2, length: 30, color: '#f0b90b', width: 2 },
+      { id: 3, length: 0, color: '#a855f7', width: 2 },
+      { id: 4, length: 0, color: '#38bdf8', width: 2 },
+      { id: 5, length: 0, color: '#22c55e', width: 2 },
+      { id: 6, length: 0, color: '#ef4444', width: 2 },
+      { id: 7, length: 0, color: '#60a5fa', width: 2 },
+      { id: 8, length: 0, color: '#f59e0b', width: 2 },
+      { id: 9, length: 0, color: '#9333ea', width: 2 },
+      { id: 10, length: 0, color: '#ec4899', width: 2 }
+    ]
+  })
 
-  const addIndicator = (type: IndicatorType) => {
-    const next = createDefaultIndicator(type)
-    setInstances((prev) => [...prev, next])
-    setPickerOpen(false)
-  }
-
-  const deleteIndicator = (id: string) => {
-    setInstances((prev) => prev.filter((item) => item.id !== id))
-    setEditing(null)
-  }
-
-  const saveIndicator = (next: IndicatorInstance) => {
-    setInstances((prev) => prev.map((item) => item.id === next.id ? next : item))
-    setEditing(null)
-  }
+  const activeMAs = centerState.selectedIds.includes('MA')
+    ? centerState.maLines.filter(line => line.length > 0)
+    : []
 
   return (
     <div className="app-shell">
@@ -193,9 +169,8 @@ export default function TrainingPage() {
         </div>
 
         <div className="toolbar-actions">
-          <button className="btn primary iconish" onClick={() => setPickerOpen(true)}>
+          <button className="btn primary only-icon" onClick={() => setOpen(true)} title="指标中心">
             <span className="toolbar-icon">ƒx</span>
-            <span>指标</span>
           </button>
         </div>
       </header>
@@ -205,45 +180,37 @@ export default function TrainingPage() {
           <div className="chart-header stacked">
             <div className="chart-header-top">
               <div className="chart-title">{symbol} 永续 · {interval}</div>
-              <div className="chart-note">时间轴已隐藏 · v1.2.6 图标与输入修复版</div>
+              <div className="chart-note">时间轴已隐藏 · v1.2.7 指标中心交互版</div>
             </div>
 
             <div className="loaded-indicators-bar">
-              {instances.length === 0 ? (
-                <div className="empty-inline">暂无指标，点击右上角“指标”添加。</div>
+              {activeMAs.length === 0 ? (
+                <div className="empty-inline">当前未显示 MA。</div>
               ) : (
-                instances.map((item) => (
-                  <button
-                    key={item.id}
-                    className="indicator-chip"
-                    onClick={() => setEditing(item)}
-                    title="点击编辑参数、颜色、线宽或删除"
-                  >
-                    <span className="dot" style={{ background: item.style.color || '#60a5fa' }} />
-                    <span>{formatIndicatorName(item)}</span>
-                  </button>
+                activeMAs.map(line => (
+                  <div key={line.id} className="indicator-chip passive">
+                    <span className="dot" style={{ background: line.color }} />
+                    <span>MA({line.length})</span>
+                  </div>
                 ))
               )}
             </div>
           </div>
 
           <div className="chart-wrap">
-            <KlineMockChart indicators={instances} />
+            <KlineMockChart state={centerState} />
           </div>
         </main>
       </div>
 
-      <IndicatorPickerModal
-        open={pickerOpen}
-        onClose={() => setPickerOpen(false)}
-        onAdd={addIndicator}
-      />
-
-      <IndicatorEditModal
-        indicator={editing}
-        onClose={() => setEditing(null)}
-        onSave={saveIndicator}
-        onDelete={deleteIndicator}
+      <IndicatorCenterModal
+        open={open}
+        value={centerState}
+        onClose={() => setOpen(false)}
+        onSave={(next) => {
+          setCenterState(next)
+          setOpen(false)
+        }}
       />
     </div>
   )
