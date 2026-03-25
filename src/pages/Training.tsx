@@ -94,7 +94,7 @@ function KlineMockChart({ state }: { state: IndicatorCenterState }) {
   const min = Math.min(...allLows)
   const scaleY = (v: number) => {
     const pct = (v - min) / (max - min || 1)
-    return height - 24 - pct * (height - 48)
+    return height - 20 - pct * (height - 40)
   }
   const xForIndex = (i: number) => padLeft + i * candleGap + 3
 
@@ -102,7 +102,7 @@ function KlineMockChart({ state }: { state: IndicatorCenterState }) {
     <svg viewBox={`0 0 ${width} ${height}`} className="chart-svg">
       <rect x="0" y="0" width={width} height={height} fill="#0b0e11" />
       {Array.from({ length: 6 }).map((_, i) => {
-        const y = 24 + i * ((height - 48) / 5)
+        const y = 20 + i * ((height - 40) / 5)
         return <line key={i} x1="0" y1={y} x2={width} y2={y} stroke="#1f2937" strokeWidth="1" />
       })}
 
@@ -130,7 +130,7 @@ function KlineMockChart({ state }: { state: IndicatorCenterState }) {
         const bodyH = Math.max(2, Math.abs(closeY - openY))
         return (
           <g key={i}>
-            <line x1={x + 3} y1={highY} x2={x + 3} y2={lowY} stroke={up ? '#0ECB81' : '#F6465D'} strokeWidth="1.2" />
+            <line x1={x + 3} y1={highY} x2={x + 3} y2={lowY} stroke={up ? '#0ECB81' : '#F6465D'} strokeWidth="1.1" />
             <rect x={x} y={bodyY} width="6" height={bodyH} fill={up ? '#0ECB81' : '#F6465D'} rx="1" />
           </g>
         )
@@ -176,16 +176,12 @@ export default function TrainingPage() {
 
   return (
     <div className="app-shell">
-      <header className="topbar">
-        <div className="brand">SeaCat Backtest</div>
+      <header className="topbar compact-top">
+        <div className="brand compact-brand">SeaCat Backtest</div>
 
         <div className="symbol-group">
           {symbols.map((item) => (
-            <button
-              key={item}
-              className={item === symbol ? 'btn active' : 'btn'}
-              onClick={() => setSymbol(item)}
-            >
+            <button key={item} className={item === symbol ? 'btn active compact-btn' : 'btn compact-btn'} onClick={() => setSymbol(item)}>
               {item}
             </button>
           ))}
@@ -193,40 +189,36 @@ export default function TrainingPage() {
 
         <div className="interval-group">
           {intervals.map((item) => (
-            <button
-              key={item}
-              className={item === interval ? 'btn active' : 'btn'}
-              onClick={() => setInterval(item)}
-            >
+            <button key={item} className={item === interval ? 'btn active compact-btn' : 'btn compact-btn'} onClick={() => setInterval(item)}>
               {item}
             </button>
           ))}
         </div>
 
         <div className="toolbar-actions">
-          <button className="btn primary only-icon" onClick={() => setOpen(true)} title="指标中心">
+          <button className="btn primary only-icon compact-icon-btn" onClick={() => setOpen(true)} title="指标中心">
             <span className="toolbar-icon">ƒx</span>
           </button>
         </div>
       </header>
 
-      <div className="workspace solo">
+      <div className="workspace solo compact-workspace">
         <main className="main-chart">
-          <div className="chart-header stacked">
+          <div className="chart-header stacked compact-chart-header">
             <div className="chart-header-top">
               <div className="chart-title">{symbol} 永续 · {interval}</div>
-              <div className="chart-note">时间轴已隐藏 · v1.2.8 EMA 多线接入版</div>
+              <div className="chart-note">时间轴已隐藏 · v1.2.9 紧凑布局版</div>
             </div>
 
-            <div className="loaded-indicators-bar">
+            <div className="loaded-indicators-bar compact-loaded">
               {activeMAs.map((line) => (
-                <div key={`ma-${line.id}`} className="indicator-chip passive">
+                <div key={`ma-${line.id}`} className="indicator-chip passive compact-chip">
                   <span className="dot" style={{ background: line.color }} />
                   <span>MA({line.length})</span>
                 </div>
               ))}
               {activeEMAs.map((line) => (
-                <div key={`ema-${line.id}`} className="indicator-chip passive">
+                <div key={`ema-${line.id}`} className="indicator-chip passive compact-chip">
                   <span className="dot" style={{ background: line.color }} />
                   <span>EMA({line.length})</span>
                 </div>
@@ -237,7 +229,7 @@ export default function TrainingPage() {
             </div>
           </div>
 
-          <div className="chart-wrap">
+          <div className="chart-wrap compact-chart-wrap">
             <KlineMockChart state={centerState} />
           </div>
         </main>

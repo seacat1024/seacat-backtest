@@ -30,12 +30,12 @@ function SeriesEditor({
   updateLine: (id: number, patch: Partial<MultiLineConfig>) => void
 }) {
   return (
-    <div className="ma-grid">
+    <div className="rows-grid">
       {lines.map((line, i) => (
-        <div className="ma-row" key={line.id}>
-          <div className="ma-label">{prefix}{i + 1}</div>
+        <div className="config-row" key={line.id}>
+          <div className="row-label">{prefix}{i + 1}</div>
           <input
-            className="param-input"
+            className="param-input compact"
             type="text"
             inputMode="numeric"
             value={line.length === 0 ? '' : String(line.length)}
@@ -46,21 +46,28 @@ function SeriesEditor({
             placeholder="0"
           />
           <select
-            className="param-select"
+            className="param-select compact"
             value={line.width}
             onChange={(e) => updateLine(line.id, { width: Number(e.target.value) })}
           >
             {WIDTHS.map((w) => <option key={w} value={w}>{w}</option>)}
           </select>
-          <div className="swatch-line">
+          <div className="swatch-line compact">
             {COLORS.map((color) => (
               <button
                 key={color}
-                className="swatch-dot"
+                className="swatch-dot compact"
                 style={{ background: color, outline: line.color === color ? '2px solid #fff' : 'none' }}
                 onClick={() => updateLine(line.id, { color })}
               />
             ))}
+            <input
+              className="row-color-picker"
+              type="color"
+              value={line.color}
+              onChange={(e) => updateLine(line.id, { color: e.target.value })}
+              title="自定义颜色"
+            />
           </div>
         </div>
       ))}
@@ -102,31 +109,31 @@ export default function IndicatorCenterModal({ open, value, onClose, onSave }: P
 
   return (
     <div className="center-mask" onClick={onClose}>
-      <div className="center-shell" onClick={(e) => e.stopPropagation()}>
-        <div className="center-head">
+      <div className="center-shell compact-shell" onClick={(e) => e.stopPropagation()}>
+        <div className="center-head compact-head">
           <div className="center-title">指标中心</div>
           <button className="x-btn" onClick={onClose}>✕</button>
         </div>
 
-        <div className="center-body">
-          <aside className="center-left">
+        <div className="center-body compact-body">
+          <aside className="center-left compact-left">
             <button className={leftTab === 'all' ? 'left-tab active' : 'left-tab'} onClick={() => setLeftTab('all')}>全部</button>
             <button className={leftTab === 'selected' ? 'left-tab active' : 'left-tab'} onClick={() => setLeftTab('selected')}>已选指标</button>
           </aside>
 
-          <section className="center-list">
-            <div className="search-lite">搜索指标</div>
-            <div className="indicator-list2">
+          <section className="center-list compact-list">
+            <div className="search-lite compact-search">搜索指标</div>
+            <div className="indicator-list2 compact-indicator-list">
               {visibleList.map((item) => (
                 <button
                   key={item.id}
-                  className={activeId === item.id ? 'indicator-item2 active' : 'indicator-item2'}
+                  className={activeId === item.id ? 'indicator-item2 active compact-card' : 'indicator-item2 compact-card'}
                   onClick={() => setActiveId(item.id)}
                 >
                   <div className="indicator-check" onClick={(e) => { e.stopPropagation(); toggleSelected(item.id) }}>
                     {draft.selectedIds.includes(item.id) ? '✓' : ''}
                   </div>
-                  <div className="indicator-badge">{item.label}</div>
+                  <div className="indicator-badge compact-badge">{item.label}</div>
                   <div className="indicator-meta">
                     <div className="indicator-name">{item.label}</div>
                     <div className="indicator-desc">{item.desc}</div>
@@ -136,8 +143,8 @@ export default function IndicatorCenterModal({ open, value, onClose, onSave }: P
             </div>
           </section>
 
-          <section className="center-settings">
-            <div className="settings-top">
+          <section className="center-settings compact-settings">
+            <div className="settings-top compact-settings-top">
               <div className="settings-title">参数设置</div>
               <button className="reset-link" onClick={() => setDraft(value)}>恢复默认</button>
             </div>
@@ -147,14 +154,14 @@ export default function IndicatorCenterModal({ open, value, onClose, onSave }: P
             ) : activeId === 'EMA' ? (
               <SeriesEditor prefix="EMA" lines={draft.emaLines} updateLine={(id, patch) => updateLines('emaLines', id, patch)} />
             ) : (
-              <div className="coming-soon">这一版已接通 MA + EMA。RSI / MACD / KDJ 下一版继续接副图。</div>
+              <div className="coming-soon">这一版先把布局压缩和自定义颜色做好。RSI / MACD / KDJ 下一版继续接副图。</div>
             )}
           </section>
         </div>
 
-        <div className="center-footer">
-          <button className="btn" onClick={onClose}>取消</button>
-          <button className="btn primary" onClick={() => onSave(draft)}>应用</button>
+        <div className="center-footer compact-footer">
+          <button className="btn compact-btn" onClick={onClose}>取消</button>
+          <button className="btn primary compact-btn" onClick={() => onSave(draft)}>应用</button>
         </div>
       </div>
     </div>
