@@ -205,7 +205,7 @@ export default function TrainingPage() {
           <div className="chart-header stacked">
             <div className="chart-header-top">
               <div className="chart-title">{symbol} 永续 · {interval}</div>
-              <div className="chart-note">时间轴已隐藏 · v1.2.5 颜色与图标升级版</div>
+              <div className="chart-note">时间轴已隐藏 · v1.2.6 图标与输入修复版</div>
             </div>
 
             <div className="loaded-indicators-bar">

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import type { IndicatorInstance } from './indicatorTypes'
 import { formatIndicatorName } from './indicatorUtils'
 
-const presetColors = ['#f0b90b', '#60a5fa', '#22c55e', '#a78bfa', '#f472b6', '#38bdf8', '#94a3b8', '#e5e7eb']
+const presetColors = ['#ef4444', '#22c55e', '#60a5fa', '#a78bfa', '#ffffff', '#f0b90b', '#f472b6', '#38bdf8']
 
 type Props = {
   indicator: IndicatorInstance | null
@@ -13,20 +13,25 @@ type Props = {
 
 export default function IndicatorEditModal({ indicator, onClose, onSave, onDelete }: Props) {
   const [draft, setDraft] = useState<IndicatorInstance | null>(indicator)
+  const [paramDrafts, setParamDrafts] = useState<Record<string, string>>({})
 
   useEffect(() => {
     setDraft(indicator)
+    if (indicator) {
+      const next: Record<string, string> = {}
+      Object.entries(indicator.params).forEach(([key, value]) => {
+        if (typeof value === 'number') next[key] = String(value)
+      })
+      setParamDrafts(next)
+    } else {
+      setParamDrafts({})
+    }
   }, [indicator])
 
   if (!indicator || !draft) return null
 
-  const setParam = (key: string, value: number) => {
-    const next = {
-      ...draft,
-      params: { ...draft.params, [key]: value },
-    }
-    next.name = formatIndicatorName(next)
-    setDraft(next)
+  const setParamDraft = (key: string, value: string) => {
+    setParamDrafts((prev) => ({ ...prev, [key]: value }))
   }
 
   const setColor = (color: string) => {
@@ -43,6 +48,22 @@ export default function IndicatorEditModal({ indicator, onClose, onSave, onDelet
     })
   }
 
+  const handleSave = () => {
+    const next = {
+      ...draft,
+      params: { ...draft.params },
+    }
+
+    Object.entries(paramDrafts).forEach(([key, value]) => {
+      const cleaned = value.trim()
+      const parsed = cleaned === '' ? 0 : Number(cleaned)
+      ;(next.params as Record<string, number | string>)[key] = Number.isFinite(parsed) ? parsed : 0
+    })
+
+    next.name = formatIndicatorName(next)
+    onSave(next)
+  }
+
   return (
     <div className="modal-mask" onClick={onClose}>
       <div className="modal-card edit-modal" onClick={(e) => e.stopPropagation()}>
@@ -57,9 +78,11 @@ export default function IndicatorEditModal({ indicator, onClose, onSave, onDelet
               <label className="field" key={key}>
                 <span>{key}</span>
                 <input
-                  type="number"
-                  value={value}
-                  onChange={(e) => setParam(key, Number(e.target.value))}
+                  type="text"
+                  inputMode="numeric"
+                  value={paramDrafts[key] ?? String(value)}
+                  onChange={(e) => setParamDraft(key, e.target.value.replace(/[^\d]/g, ''))}
+                  placeholder="输入数值"
                 />
               </label>
             ) : null
@@ -73,6 +96,7 @@ export default function IndicatorEditModal({ indicator, onClose, onSave, onDelet
               {presetColors.map((color) => (
                 <button
                   key={color}
+                  type="button"
                   className="color-swatch"
                   style={{ background: color, outline: draft.style.color === color ? '2px solid #fff' : 'none' }}
                   onClick={() => setColor(color)}
@@ -107,7 +131,7 @@ export default function IndicatorEditModal({ indicator, onClose, onSave, onDelet
           <button className="btn ghost-danger" onClick={() => onDelete(draft.id)}>删除指标</button>
           <div className="action-right">
             <button className="btn" onClick={onClose}>取消</button>
-            <button className="btn primary" onClick={() => onSave(draft)}>保存</button>
+            <button className="btn primary" onClick={handleSave}>保存</button>
           </div>
         </div>
       </div>
