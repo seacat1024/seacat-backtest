@@ -132,13 +132,12 @@ export default function TrainingPage() {
 
           {showPicker && (
             <div className="panel-card">
-              <div className="panel-title">指标列表（双击添加）</div>
+              <div className="panel-title">指标列表（点击添加）</div>
               <div className="picker-list">
                 {indicatorTypes.map((type) => (
                   <button
                     key={type}
                     className="picker-item"
-                    onDoubleClick={() => addIndicator(type)}
                     onClick={() => addIndicator(type)}
                     title="点击添加"
                   >
@@ -153,7 +152,7 @@ export default function TrainingPage() {
         <main className="main-chart">
           <div className="chart-header">
             <div className="chart-title">{symbol} 永续 · {interval}</div>
-            <div className="chart-note">时间轴已隐藏 · 当前为前端可运行骨架版</div>
+            <div className="chart-note">时间轴已隐藏 · 当前为 Tauri 整合骨架版</div>
           </div>
           <div className="chart-wrap">
             <KlineMockChart />
