@@ -7,7 +7,7 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
     "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
 }
-button, input { font: inherit; }
+button, input, select { font: inherit; }
 
 .app-shell { min-height: 100%; display: flex; flex-direction: column; }
 
@@ -207,12 +207,39 @@ button, input { font: inherit; }
   color: #cbd5e1;
   font-size: 13px;
 }
-.field input {
+.field input,
+.select-input {
   border: 1px solid #334155;
   background: #0b1220;
   color: #f8fafc;
   border-radius: 10px;
   padding: 10px 12px;
+}
+.style-panel {
+  display: grid;
+  grid-template-columns: 1fr 140px;
+  gap: 14px;
+  padding: 0 18px 18px;
+}
+.color-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.color-swatch {
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,.2);
+  cursor: pointer;
+}
+.native-color {
+  width: 38px;
+  height: 30px;
+  padding: 0;
+  background: transparent;
+  border: 0;
 }
 .modal-actions {
   display: flex;
@@ -233,7 +260,8 @@ button, input { font: inherit; }
     flex-wrap: wrap;
   }
 
-  .form-grid {
+  .form-grid,
+  .style-panel {
     grid-template-columns: 1fr;
   }
 

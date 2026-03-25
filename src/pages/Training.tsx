@@ -205,7 +205,7 @@ export default function TrainingPage() {
           <div className="chart-header stacked">
             <div className="chart-header-top">
               <div className="chart-title">{symbol} 永续 · {interval}</div>
-              <div className="chart-note">时间轴已隐藏 · v1.2.4 修复主图指标显示</div>
+              <div className="chart-note">时间轴已隐藏 · v1.2.5 颜色与图标升级版</div>
             </div>
 
             <div className="loaded-indicators-bar">
@@ -217,7 +217,7 @@ export default function TrainingPage() {
                     key={item.id}
                     className="indicator-chip"
                     onClick={() => setEditing(item)}
-                    title="点击编辑参数或删除"
+                    title="点击编辑参数、颜色、线宽或删除"
                   >
                     <span className="dot" style={{ background: item.style.color || '#60a5fa' }} />
                     <span>{formatIndicatorName(item)}</span>

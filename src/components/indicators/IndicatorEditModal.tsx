@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import type { IndicatorInstance } from './indicatorTypes'
 import { formatIndicatorName } from './indicatorUtils'
 
+const presetColors = ['#f0b90b', '#60a5fa', '#22c55e', '#a78bfa', '#f472b6', '#38bdf8', '#94a3b8', '#e5e7eb']
+
 type Props = {
   indicator: IndicatorInstance | null
   onClose: () => void
@@ -27,6 +29,20 @@ export default function IndicatorEditModal({ indicator, onClose, onSave, onDelet
     setDraft(next)
   }
 
+  const setColor = (color: string) => {
+    setDraft({
+      ...draft,
+      style: { ...draft.style, color },
+    })
+  }
+
+  const setWidth = (width: number) => {
+    setDraft({
+      ...draft,
+      style: { ...draft.style, width },
+    })
+  }
+
   return (
     <div className="modal-mask" onClick={onClose}>
       <div className="modal-card edit-modal" onClick={(e) => e.stopPropagation()}>
@@ -48,6 +64,43 @@ export default function IndicatorEditModal({ indicator, onClose, onSave, onDelet
               </label>
             ) : null
           ))}
+        </div>
+
+        <div className="style-panel">
+          <div className="field">
+            <span>颜色</span>
+            <div className="color-row">
+              {presetColors.map((color) => (
+                <button
+                  key={color}
+                  className="color-swatch"
+                  style={{ background: color, outline: draft.style.color === color ? '2px solid #fff' : 'none' }}
+                  onClick={() => setColor(color)}
+                  title={color}
+                />
+              ))}
+              <input
+                className="native-color"
+                type="color"
+                value={draft.style.color || '#60a5fa'}
+                onChange={(e) => setColor(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <label className="field">
+            <span>线宽</span>
+            <select
+              className="select-input"
+              value={draft.style.width || 2}
+              onChange={(e) => setWidth(Number(e.target.value))}
+            >
+              <option value={1}>1</option>
+              <option value={2}>2</option>
+              <option value={3}>3</option>
+              <option value={4}>4</option>
+            </select>
+          </label>
         </div>
 
         <div className="modal-actions">
