@@ -1,6 +1,6 @@
 [package]
 name = "seacat-backtest"
-version = "1.2.2"
+version = "1.2.3"
 description = "SeaCat Backtest desktop shell"
 authors = ["seacat1024"]
 edition = "2021"

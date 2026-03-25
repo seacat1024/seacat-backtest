@@ -1,9 +1,10 @@
 import { useMemo, useState } from 'react'
 import { createDefaultIndicator } from '../components/indicators/indicatorDefaults'
+import IndicatorEditModal from '../components/indicators/IndicatorEditModal'
+import IndicatorPickerModal from '../components/indicators/IndicatorPickerModal'
 import type { IndicatorInstance, IndicatorType } from '../components/indicators/indicatorTypes'
 import { formatIndicatorName } from '../components/indicators/indicatorUtils'
 
-const indicatorTypes: IndicatorType[] = ['MA', 'EMA', 'MACD', 'RSI', 'KDJ']
 const intervals = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1W']
 const symbols = ['BTCUSDT', 'ETHUSDT']
 
@@ -64,23 +65,30 @@ export default function TrainingPage() {
   const [symbol, setSymbol] = useState('BTCUSDT')
   const [interval, setInterval] = useState('15m')
   const [instances, setInstances] = useState<IndicatorInstance[]>([])
-  const [showPicker, setShowPicker] = useState(false)
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [editing, setEditing] = useState<IndicatorInstance | null>(null)
 
   const addIndicator = (type: IndicatorType) => {
     const next = createDefaultIndicator(type)
-    next.name = formatIndicatorName(next)
     setInstances((prev) => [...prev, next])
-    setShowPicker(false)
+    setPickerOpen(false)
   }
 
-  const removeIndicator = (id: string) => {
+  const deleteIndicator = (id: string) => {
     setInstances((prev) => prev.filter((item) => item.id !== id))
+    setEditing(null)
+  }
+
+  const saveIndicator = (next: IndicatorInstance) => {
+    setInstances((prev) => prev.map((item) => item.id === next.id ? next : item))
+    setEditing(null)
   }
 
   return (
     <div className="app-shell">
       <header className="topbar">
         <div className="brand">SeaCat Backtest</div>
+
         <div className="symbol-group">
           {symbols.map((item) => (
             <button
@@ -92,6 +100,7 @@ export default function TrainingPage() {
             </button>
           ))}
         </div>
+
         <div className="interval-group">
           {intervals.map((item) => (
             <button
@@ -103,62 +112,60 @@ export default function TrainingPage() {
             </button>
           ))}
         </div>
+
         <div className="toolbar-actions">
-          <button className="btn primary" onClick={() => setShowPicker((v) => !v)}>
-            指标
+          <button className="btn primary iconish" onClick={() => setPickerOpen(true)}>
+            <span className="toolbar-icon">ƒx</span>
+            <span>指标</span>
           </button>
         </div>
       </header>
 
-      <div className="workspace">
-        <aside className="left-panel">
-          <div className="panel-card">
-            <div className="panel-title">已加载指标</div>
-            {instances.length === 0 ? (
-              <div className="empty-text">暂无指标，点击右上角“指标”添加。</div>
-            ) : (
-              <div className="indicator-list">
-                {instances.map((item) => (
-                  <div key={item.id} className="indicator-row">
-                    <span>{formatIndicatorName(item)}</span>
-                    <button className="mini-btn danger" onClick={() => removeIndicator(item.id)}>
-                      删除
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {showPicker && (
-            <div className="panel-card">
-              <div className="panel-title">指标列表（点击添加）</div>
-              <div className="picker-list">
-                {indicatorTypes.map((type) => (
-                  <button
-                    key={type}
-                    className="picker-item"
-                    onClick={() => addIndicator(type)}
-                    title="点击添加"
-                  >
-                    {type}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-        </aside>
-
+      <div className="workspace solo">
         <main className="main-chart">
-          <div className="chart-header">
-            <div className="chart-title">{symbol} 永续 · {interval}</div>
-            <div className="chart-note">时间轴已隐藏 · 当前为 Tauri 整合骨架版</div>
+          <div className="chart-header stacked">
+            <div className="chart-header-top">
+              <div className="chart-title">{symbol} 永续 · {interval}</div>
+              <div className="chart-note">时间轴已隐藏 · v1.2.3 指标交互升级版</div>
+            </div>
+
+            <div className="loaded-indicators-bar">
+              {instances.length === 0 ? (
+                <div className="empty-inline">暂无指标，点击右上角“指标”添加。</div>
+              ) : (
+                instances.map((item) => (
+                  <button
+                    key={item.id}
+                    className="indicator-chip"
+                    onClick={() => setEditing(item)}
+                    title="点击编辑参数或删除"
+                  >
+                    <span className="dot" style={{ background: item.style.color || '#60a5fa' }} />
+                    <span>{formatIndicatorName(item)}</span>
+                  </button>
+                ))
+              )}
+            </div>
           </div>
+
           <div className="chart-wrap">
             <KlineMockChart />
           </div>
         </main>
       </div>
+
+      <IndicatorPickerModal
+        open={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        onAdd={addIndicator}
+      />
+
+      <IndicatorEditModal
+        indicator={editing}
+        onClose={() => setEditing(null)}
+        onSave={saveIndicator}
+        onDelete={deleteIndicator}
+      />
     </div>
   )
 }
