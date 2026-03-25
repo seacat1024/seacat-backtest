@@ -35,7 +35,7 @@ function SeriesEditor({
         <div className="config-row" key={line.id}>
           <div className="row-label">{prefix}{i + 1}</div>
           <input
-            className="param-input compact"
+            className="param-input"
             type="text"
             inputMode="numeric"
             value={line.length === 0 ? '' : String(line.length)}
@@ -46,7 +46,7 @@ function SeriesEditor({
             placeholder="0"
           />
           <select
-            className="param-select compact"
+            className="param-select"
             value={line.width}
             onChange={(e) => updateLine(line.id, { width: Number(e.target.value) })}
           >
@@ -54,13 +54,14 @@ function SeriesEditor({
               <option key={w} value={w}>{w}</option>
             ))}
           </select>
-          <div className="swatch-line compact">
+          <div className="swatch-line">
             {COLORS.map((color) => (
               <button
                 key={color}
-                className="swatch-dot compact"
+                className="swatch-dot"
                 style={{ background: color, outline: line.color === color ? '2px solid #fff' : 'none' }}
                 onClick={() => updateLine(line.id, { color })}
+                title={color}
               />
             ))}
             <input
@@ -156,7 +157,7 @@ export default function IndicatorCenterModal({ open, value, onClose, onSave }: P
             ) : activeId === 'EMA' ? (
               <SeriesEditor prefix="EMA" lines={draft.emaLines} updateLine={(id, patch) => updateLines('emaLines', id, patch)} />
             ) : (
-              <div className="coming-soon">这一版先把布局再收紧。RSI / MACD / KDJ 下一版继续接副图。</div>
+              <div className="coming-soon">这一版先把指标中心比例重做。RSI / MACD / KDJ 下一版继续接副图。</div>
             )}
           </section>
         </div>

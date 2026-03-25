@@ -155,7 +155,7 @@ export default function TrainingPage() {
       { id: 7, length: 0, color: '#60a5fa', width: 2 },
       { id: 8, length: 0, color: '#f59e0b', width: 2 },
       { id: 9, length: 0, color: '#9333ea', width: 2 },
-      { id: 10, length: 0, color: '#ec4899', width: 2 },
+      { id: 10, length: 0, color: '#ec4899', width: 2 }
     ],
     emaLines: [
       { id: 1, length: 7, color: '#ffffff', width: 1 },
@@ -167,8 +167,8 @@ export default function TrainingPage() {
       { id: 7, length: 0, color: '#60a5fa', width: 2 },
       { id: 8, length: 0, color: '#f59e0b', width: 2 },
       { id: 9, length: 0, color: '#9333ea', width: 2 },
-      { id: 10, length: 0, color: '#ec4899', width: 2 },
-    ],
+      { id: 10, length: 0, color: '#ec4899', width: 2 }
+    ]
   })
 
   const activeMAs = centerState.selectedIds.includes('MA') ? centerState.maLines.filter((line) => line.length > 0) : []
@@ -207,7 +207,7 @@ export default function TrainingPage() {
           <div className="chart-header stacked compact-chart-header">
             <div className="chart-header-top">
               <div className="chart-title">{symbol} 永续 · {interval}</div>
-              <div className="chart-note">时间轴已隐藏 · v1.2.12 更强压缩版</div>
+              <div className="chart-note">时间轴已隐藏 · v1.2.14 两行参数版</div>
             </div>
 
             <div className="loaded-indicators-bar compact-loaded">
