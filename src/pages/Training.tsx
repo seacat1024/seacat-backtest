@@ -1,8 +1,22 @@
+
 import { useEffect, useMemo, useState } from 'react'
 import IndicatorCenterModal from '../components/indicators/IndicatorCenterModal'
 import type { IndicatorCenterState } from '../components/indicators/types'
 
 type Bar = { open: number; high: number; low: number; close: number }
+type PositionSide = 'long' | 'short'
+type PositionState = { side: PositionSide; qty: number; entry: number; entryBarIndex: number }
+
+type TradeRecord = {
+  id: number
+  kind: 'open' | 'close'
+  side: PositionSide
+  price: number
+  qty: number
+  pnl?: number
+  barIndex: number
+}
+
 type HoverData = {
   index: number
   x: number
@@ -10,18 +24,9 @@ type HoverData = {
   bar: Bar
   maValues: Array<{ label: string; value: number }>
   emaValues: Array<{ label: string; value: number }>
-  rsi?: number
-  macd?: number
-  signal?: number
-  hist?: number
 } | null
 
-type KlineCachePayload = {
-  symbol: string
-  interval: string
-  savedAt: number
-  bars: Bar[]
-}
+type KlineCachePayload = { symbol: string; interval: string; savedAt: number; bars: Bar[] }
 
 const intervals = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1W']
 const symbols = ['BTCUSDT', 'ETHUSDT']
@@ -29,6 +34,7 @@ const replaySpeeds = [1, 2, 4, 8]
 const STORAGE_KEY = 'seacat-backtest-indicator-profiles-v1'
 const KLINE_CACHE_PREFIX = 'seacat-backtest-kline-cache-v1'
 const KLINE_CACHE_TTL_MS = 1000 * 60 * 15
+const DISPLAY_WINDOW = 140
 
 const defaultIndicatorState = (): IndicatorCenterState => ({
   selectedIds: ['MA', 'EMA', 'RSI', 'MACD'],
@@ -92,12 +98,7 @@ function loadKlineCache(symbol: string, interval: string): KlineCachePayload | n
 }
 
 function saveKlineCache(symbol: string, interval: string, bars: Bar[]) {
-  const payload: KlineCachePayload = {
-    symbol,
-    interval,
-    savedAt: Date.now(),
-    bars,
-  }
+  const payload: KlineCachePayload = { symbol, interval, savedAt: Date.now(), bars }
   localStorage.setItem(getKlineCacheKey(symbol, interval), JSON.stringify(payload))
 }
 
@@ -307,12 +308,24 @@ function IndicatorSubcharts({
   )
 }
 
-function KlineChart({ bars, state, loading }: { bars: Bar[]; state: IndicatorCenterState; loading: boolean }) {
+function KlineChart({
+  bars,
+  state,
+  loading,
+  tradeRecords,
+  windowStart,
+}: {
+  bars: Bar[]
+  state: IndicatorCenterState
+  loading: boolean
+  tradeRecords: TradeRecord[]
+  windowStart: number
+}) {
   const [hover, setHover] = useState<HoverData>(null)
   const width = 1100
   const height = 420
   const padLeft = 20
-  const candleGap = 10.5
+  const candleGap = Math.max(5.8, Math.min(10.5, (width - 40) / Math.max(1, bars.length)))
   const closes = bars.map((b) => b.close)
 
   const maSeries = state.selectedIds.includes('MA')
@@ -321,9 +334,6 @@ function KlineChart({ bars, state, loading }: { bars: Bar[]; state: IndicatorCen
   const emaSeries = state.selectedIds.includes('EMA')
     ? state.emaLines.filter((line) => line.length > 0).map((line) => ({ ...line, kind: 'EMA' as const, values: calcEMA(closes, line.length) }))
     : []
-
-  const rsi = useMemo(() => calcRSI(closes, state.rsiPeriod), [closes, state.rsiPeriod])
-  const { macd, signal, hist } = useMemo(() => calcMACD(closes, state.macdConfig.fast, state.macdConfig.slow, state.macdConfig.signal), [closes, state.macdConfig])
 
   const allSeries = [...maSeries, ...emaSeries]
   const allHighs = bars.map((b) => b.high)
@@ -337,6 +347,10 @@ function KlineChart({ bars, state, loading }: { bars: Bar[]; state: IndicatorCen
     return height - 20 - pct * (height - 40)
   }
   const xForIndex = (i: number) => padLeft + i * candleGap + 3
+
+  const localMarks = tradeRecords
+    .filter((t) => t.barIndex >= windowStart && t.barIndex < windowStart + bars.length)
+    .map((t) => ({ ...t, localIndex: t.barIndex - windowStart }))
 
   return (
     <>
@@ -354,18 +368,7 @@ function KlineChart({ bars, state, loading }: { bars: Bar[]; state: IndicatorCen
             const bar = bars[idx]
             const maValues = maSeries.map((s) => ({ label: `MA(${s.length})`, value: s.values[idx] })).filter((x): x is { label: string; value: number } => typeof x.value === 'number')
             const emaValues = emaSeries.map((s) => ({ label: `EMA(${s.length})`, value: s.values[idx] })).filter((x): x is { label: string; value: number } => typeof x.value === 'number')
-            setHover({
-              index: idx,
-              x: xForIndex(idx),
-              y: py,
-              bar,
-              maValues,
-              emaValues,
-              rsi: typeof rsi[idx] === 'number' ? rsi[idx] as number : undefined,
-              macd: typeof macd[idx] === 'number' ? macd[idx] as number : undefined,
-              signal: typeof signal[idx] === 'number' ? signal[idx] as number : undefined,
-              hist: typeof hist[idx] === 'number' ? hist[idx] as number : undefined,
-            })
+            setHover({ index: idx, x: xForIndex(idx), y: py, bar, maValues, emaValues })
           }}
           onMouseLeave={() => setHover(null)}
         >
@@ -402,6 +405,28 @@ function KlineChart({ bars, state, loading }: { bars: Bar[]; state: IndicatorCen
               </g>
             )
           })}
+          {localMarks.map((mark) => {
+            const x = xForIndex(mark.localIndex)
+            const y = scaleY(mark.price)
+            const isOpen = mark.kind === 'open'
+            const isLong = mark.side === 'long'
+            const color = isOpen ? (isLong ? '#22c55e' : '#ef4444') : '#f0b90b'
+            const lineY2 = isOpen ? (isLong ? y + 18 : y - 18) : y - 16
+            const triangle = isOpen
+              ? isLong
+                ? f"{x},{y-10} {x-6},{y} {x+6},{y}"
+                : f"{x},{y+10} {x-6},{y} {x+6},{y}"
+              : f"{x},{y-8} {x-6},{y-2} {x+6},{y-2}"
+            return (
+              <g key={mark.id}>
+                <line x1={x} y1={y} x2={x} y2={lineY2} stroke={color} strokeWidth="1.6" />
+                <polygon points={triangle} fill={color} />
+                <text x={x + 8} y={isOpen ? (isLong ? y - 10 : y + 18) : y - 10} fill={color} fontSize="10">
+                  {isOpen ? (isLong ? '开多' : '开空') : '平仓'}
+                </text>
+              </g>
+            )
+          })}
           {hover ? (
             <g>
               <line x1={hover.x} y1="0" x2={hover.x} y2={height} stroke="#94a3b8" strokeDasharray="4 4" strokeWidth="1" opacity="0.9" />
@@ -412,30 +437,16 @@ function KlineChart({ bars, state, loading }: { bars: Bar[]; state: IndicatorCen
 
         {hover ? (
           <div className="hover-panel">
-            <div className="hover-title">K线 {hover.index + 1}</div>
+            <div className="hover-title">K线 {windowStart + hover.index + 1}</div>
             <div className="hover-row"><span>开</span><strong>{hover.bar.open.toFixed(2)}</strong></div>
             <div className="hover-row"><span>高</span><strong>{hover.bar.high.toFixed(2)}</strong></div>
             <div className="hover-row"><span>低</span><strong>{hover.bar.low.toFixed(2)}</strong></div>
             <div className="hover-row"><span>收</span><strong>{hover.bar.close.toFixed(2)}</strong></div>
             {hover.maValues.map((item) => <div className="hover-row" key={item.label}><span>{item.label}</span><strong>{item.value.toFixed(2)}</strong></div>)}
             {hover.emaValues.map((item) => <div className="hover-row" key={item.label}><span>{item.label}</span><strong>{item.value.toFixed(2)}</strong></div>)}
-            {typeof hover.rsi === 'number' ? <div className="hover-row"><span>RSI({state.rsiPeriod})</span><strong>{hover.rsi.toFixed(2)}</strong></div> : null}
-            {typeof hover.macd === 'number' ? <div className="hover-row"><span>MACD</span><strong>{hover.macd.toFixed(2)}</strong></div> : null}
-            {typeof hover.signal === 'number' ? <div className="hover-row"><span>Signal</span><strong>{hover.signal.toFixed(2)}</strong></div> : null}
-            {typeof hover.hist === 'number' ? <div className="hover-row"><span>Hist</span><strong>{hover.hist.toFixed(2)}</strong></div> : null}
           </div>
         ) : null}
       </div>
-
-      <IndicatorSubcharts
-        closes={closes}
-        xForIndex={xForIndex}
-        hoverIndex={hover ? hover.index : null}
-        rsiPeriod={state.rsiPeriod}
-        macdConfig={state.macdConfig}
-        showRsi={state.selectedIds.includes('RSI')}
-        showMacd={state.selectedIds.includes('MACD')}
-      />
     </>
   )
 }
@@ -454,6 +465,12 @@ export default function TrainingPage() {
   const [isPlaying, setIsPlaying] = useState(false)
   const [replaySpeed, setReplaySpeed] = useState(2)
   const [visibleCount, setVisibleCount] = useState(120)
+  const [initialBalance, setInitialBalance] = useState(10000)
+  const [balance, setBalance] = useState(10000)
+  const [orderQty, setOrderQty] = useState(0.1)
+  const [position, setPosition] = useState<PositionState | null>(null)
+  const [realizedPnl, setRealizedPnl] = useState(0)
+  const [tradeRecords, setTradeRecords] = useState<TradeRecord[]>([])
 
   useEffect(() => {
     const loaded = sanitizeState(profiles[symbol])
@@ -513,16 +530,17 @@ export default function TrainingPage() {
     const maxStart = Math.max(minStart, bars.length - 80)
     const next = Math.max(minStart, Math.floor(Math.random() * (maxStart - minStart + 1)) + minStart)
     setVisibleCount(next)
+    setPosition(null)
+    setTradeRecords([])
+    setBalance(initialBalance)
+    setRealizedPnl(0)
   }, [bars])
 
   useEffect(() => {
     if (!replayMode || !isPlaying) return
     const timer = window.setInterval(() => {
       setVisibleCount((prev) => {
-        if (prev >= bars.length) {
-          window.clearInterval(timer)
-          return prev
-        }
+        if (prev >= bars.length) return prev
         return Math.min(bars.length, prev + 1)
       })
     }, Math.max(80, 700 / replaySpeed))
@@ -530,15 +548,25 @@ export default function TrainingPage() {
   }, [replayMode, isPlaying, replaySpeed, bars.length])
 
   useEffect(() => {
-    if (visibleCount >= bars.length && isPlaying) {
-      setIsPlaying(false)
-    }
+    if (visibleCount >= bars.length && isPlaying) setIsPlaying(false)
   }, [visibleCount, bars.length, isPlaying])
+
+  const replayEnd = replayMode ? Math.max(1, Math.min(visibleCount, bars.length)) : bars.length
+  const replayStart = replayMode ? Math.max(0, replayEnd - DISPLAY_WINDOW) : 0
 
   const replayBars = useMemo(() => {
     if (!replayMode) return bars
-    return bars.slice(0, Math.max(1, Math.min(visibleCount, bars.length)))
-  }, [bars, replayMode, visibleCount])
+    return bars.slice(replayStart, replayEnd)
+  }, [bars, replayMode, replayStart, replayEnd])
+
+  const currentPrice = replayBars.length ? replayBars[replayBars.length - 1].close : 0
+  const currentBarIndex = replayMode ? Math.max(0, replayEnd - 1) : Math.max(0, bars.length - 1)
+  const floatingPnl = position
+    ? position.side === 'long'
+      ? (currentPrice - position.entry) * position.qty
+      : (position.entry - currentPrice) * position.qty
+    : 0
+  const equity = balance + floatingPnl
 
   const activeMAs = centerState.selectedIds.includes('MA') ? centerState.maLines.filter((line) => line.length > 0) : []
   const activeEMAs = centerState.selectedIds.includes('EMA') ? centerState.emaLines.filter((line) => line.length > 0) : []
@@ -550,7 +578,44 @@ export default function TrainingPage() {
     const next = Math.max(minStart, Math.floor(Math.random() * (maxStart - minStart + 1)) + minStart)
     setVisibleCount(next)
     setIsPlaying(false)
+    setPosition(null)
+    setTradeRecords([])
+    setBalance(initialBalance)
+    setRealizedPnl(0)
   }
+
+  const resetAccount = () => {
+    setBalance(initialBalance)
+    setRealizedPnl(0)
+    setPosition(null)
+    setTradeRecords([])
+  }
+
+  const openPosition = (side: PositionSide) => {
+    if (!currentPrice || orderQty <= 0 || position) return
+    const nextPosition = { side, qty: orderQty, entry: currentPrice, entryBarIndex: currentBarIndex }
+    setPosition(nextPosition)
+    setTradeRecords((prev) => [
+      ...prev,
+      { id: Date.now(), kind: 'open', side, qty: orderQty, price: currentPrice, barIndex: currentBarIndex },
+    ])
+  }
+
+  const closePosition = () => {
+    if (!position || !currentPrice) return
+    const pnl = position.side === 'long'
+      ? (currentPrice - position.entry) * position.qty
+      : (position.entry - currentPrice) * position.qty
+    setBalance((prev) => prev + pnl)
+    setRealizedPnl((prev) => prev + pnl)
+    setTradeRecords((prev) => [
+      ...prev,
+      { id: Date.now(), kind: 'close', side: position.side, qty: position.qty, price: currentPrice, pnl, barIndex: currentBarIndex },
+    ])
+    setPosition(null)
+  }
+
+  const recentTrades = [...tradeRecords].slice(-8).reverse()
 
   return (
     <div className="app-shell">
@@ -567,10 +632,10 @@ export default function TrainingPage() {
           ))}
         </div>
         <div className="toolbar-actions">
-          <button className={replayMode ? 'btn active compact-btn' : 'btn compact-btn'} onClick={() => { setReplayMode((prev) => !prev); setIsPlaying(false) }} title="切换复盘模式">
+          <button className={replayMode ? 'btn active compact-btn' : 'btn compact-btn'} onClick={() => { setReplayMode((prev) => !prev); setIsPlaying(false) }}>
             {replayMode ? '复盘中' : '看全图'}
           </button>
-          <button className="btn secondary compact-btn" onClick={() => setCenterState(defaultIndicatorState())} title="恢复当前交易对默认指标">重置</button>
+          <button className="btn secondary compact-btn" onClick={() => setCenterState(defaultIndicatorState())}>重置</button>
           <button className="btn primary only-icon compact-icon-btn" onClick={() => setOpen(true)} title="指标中心">
             <span className="toolbar-icon">ƒx</span>
           </button>
@@ -582,7 +647,7 @@ export default function TrainingPage() {
           <div className="chart-header stacked compact-chart-header">
             <div className="chart-header-top">
               <div className="chart-title">{symbol} 永续 · {interval}</div>
-              <div className="chart-note">时间轴已隐藏 · v1.2.23 复盘播放控制版</div>
+              <div className="chart-note">时间轴已隐藏 · v1.2.27 交易标记与记录版</div>
             </div>
 
             <div className="replay-toolbar">
@@ -601,7 +666,30 @@ export default function TrainingPage() {
                   {replaySpeeds.map((speed) => <option key={speed} value={speed}>{speed}x</option>)}
                 </select>
               </div>
-              <div className="progress-chip">进度：{replayBars.length} / {bars.length || 0}</div>
+              <div className="progress-chip">进度：{replayMode ? Math.min(visibleCount, bars.length) : bars.length} / {bars.length || 0}</div>
+            </div>
+
+            <div className="trade-toolbar">
+              <div className="account-box">
+                <span>初始资金</span>
+                <input className="trade-input" type="number" value={initialBalance} onChange={(e) => setInitialBalance(Number(e.target.value) || 0)} />
+                <button className="btn compact-btn" onClick={resetAccount}>重置账户</button>
+              </div>
+              <div className="account-box">
+                <span>下单数量</span>
+                <input className="trade-input" type="number" value={orderQty} step="0.01" onChange={(e) => setOrderQty(Number(e.target.value) || 0)} />
+                <button className="btn buy-btn compact-btn" onClick={() => openPosition('long')} disabled={!!position || !currentPrice}>开多</button>
+                <button className="btn sell-btn compact-btn" onClick={() => openPosition('short')} disabled={!!position || !currentPrice}>开空</button>
+                <button className="btn secondary compact-btn" onClick={closePosition} disabled={!position}>平仓</button>
+              </div>
+              <div className="account-summary">
+                <span>现价 {currentPrice.toFixed(2)}</span>
+                <span>余额 {balance.toFixed(2)}</span>
+                <span>浮盈亏 {floatingPnl.toFixed(2)}</span>
+                <span>已实现 {realizedPnl.toFixed(2)}</span>
+                <span>净值 {equity.toFixed(2)}</span>
+                <span>{position ? `持仓 ${position.side === 'long' ? '多' : '空'} ${position.qty} @ ${position.entry.toFixed(2)}` : '暂无持仓'}</span>
+              </div>
             </div>
 
             <div className="loaded-indicators-bar compact-loaded">
@@ -622,10 +710,40 @@ export default function TrainingPage() {
               <div className="persist-chip">指标已保存：{symbol}</div>
               <div className={`cache-chip ${cacheStatus}`}>{cacheStatus === 'fresh' ? 'K线缓存命中' : cacheStatus === 'stale' ? 'K线旧缓存' : cacheStatus === 'remote' ? 'K线远端已刷新' : '无缓存'}</div>
             </div>
+
+            <div className="records-panel">
+              <div className="records-title">交易记录</div>
+              {recentTrades.length ? (
+                <div className="records-table">
+                  {recentTrades.map((trade) => (
+                    <div key={trade.id} className="record-row">
+                      <span>{trade.kind === 'open' ? (trade.side === 'long' ? '开多' : '开空') : '平仓'}</span>
+                      <span>{trade.price.toFixed(2)}</span>
+                      <span>{trade.qty}</span>
+                      <span>{typeof trade.pnl === 'number' ? trade.pnl.toFixed(2) : '-'}</span>
+                      <span>#{trade.barIndex + 1}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="records-empty">还没有交易记录</div>
+              )}
+            </div>
+
             {dataError ? <div className="error-banner">{dataError}</div> : null}
           </div>
+
           <div className="chart-wrap compact-chart-wrap">
-            <KlineChart bars={replayBars} state={centerState} loading={loading} />
+            <KlineChart bars={replayBars} state={centerState} loading={loading} tradeRecords={tradeRecords} windowStart={replayStart} />
+            <IndicatorSubcharts
+              closes={replayBars.map((b) => b.close)}
+              xForIndex={(i: number) => 20 + i * Math.max(5.8, Math.min(10.5, (1100 - 40) / Math.max(1, replayBars.length))) + 3}
+              hoverIndex={null}
+              rsiPeriod={centerState.rsiPeriod}
+              macdConfig={centerState.macdConfig}
+              showRsi={centerState.selectedIds.includes('RSI')}
+              showMacd={centerState.selectedIds.includes('MACD')}
+            />
           </div>
         </main>
       </div>
