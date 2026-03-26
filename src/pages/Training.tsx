@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import IndicatorCenterModal from '../components/indicators/IndicatorCenterModal'
 import type { IndicatorCenterState } from '../components/indicators/types'
 
@@ -18,6 +18,68 @@ type HoverData = {
 
 const intervals = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1W']
 const symbols = ['BTCUSDT', 'ETHUSDT']
+const STORAGE_KEY = 'seacat-backtest-indicator-profiles-v1'
+
+const defaultIndicatorState = (): IndicatorCenterState => ({
+  selectedIds: ['MA', 'EMA', 'RSI', 'MACD'],
+  maLines: [
+    { id: 1, length: 7, color: '#ffffff', width: 1 },
+    { id: 2, length: 30, color: '#f0b90b', width: 2 },
+    { id: 3, length: 0, color: '#a855f7', width: 2 },
+    { id: 4, length: 0, color: '#38bdf8', width: 2 },
+    { id: 5, length: 0, color: '#22c55e', width: 2 },
+    { id: 6, length: 0, color: '#ef4444', width: 2 },
+    { id: 7, length: 0, color: '#60a5fa', width: 2 },
+    { id: 8, length: 0, color: '#f59e0b', width: 2 },
+    { id: 9, length: 0, color: '#9333ea', width: 2 },
+    { id: 10, length: 0, color: '#ec4899', width: 2 }
+  ],
+  emaLines: [
+    { id: 1, length: 0, color: '#ffffff', width: 1 },
+    { id: 2, length: 0, color: '#f0b90b', width: 2 },
+    { id: 3, length: 55, color: '#ef4444', width: 2 },
+    { id: 4, length: 144, color: '#22c55e', width: 2 },
+    { id: 5, length: 233, color: '#ffffff', width: 2 },
+    { id: 6, length: 0, color: '#38bdf8', width: 2 },
+    { id: 7, length: 0, color: '#60a5fa', width: 2 },
+    { id: 8, length: 0, color: '#f59e0b', width: 2 },
+    { id: 9, length: 0, color: '#9333ea', width: 2 },
+    { id: 10, length: 0, color: '#ec4899', width: 2 }
+  ],
+  rsiPeriod: 14,
+  macdConfig: { fast: 12, slow: 26, signal: 9 }
+})
+
+function loadProfiles(): Record<string, IndicatorCenterState> {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function saveProfiles(profiles: Record<string, IndicatorCenterState>) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(profiles))
+}
+
+function sanitizeState(input: Partial<IndicatorCenterState> | undefined): IndicatorCenterState {
+  const defaults = defaultIndicatorState()
+  if (!input) return defaults
+  return {
+    selectedIds: Array.isArray(input.selectedIds) ? input.selectedIds : defaults.selectedIds,
+    maLines: Array.isArray(input.maLines) && input.maLines.length === defaults.maLines.length ? input.maLines : defaults.maLines,
+    emaLines: Array.isArray(input.emaLines) && input.emaLines.length === defaults.emaLines.length ? input.emaLines : defaults.emaLines,
+    rsiPeriod: typeof input.rsiPeriod === 'number' && input.rsiPeriod > 0 ? input.rsiPeriod : defaults.rsiPeriod,
+    macdConfig: {
+      fast: typeof input.macdConfig?.fast === 'number' && input.macdConfig.fast > 0 ? input.macdConfig.fast : defaults.macdConfig.fast,
+      slow: typeof input.macdConfig?.slow === 'number' && input.macdConfig.slow > 0 ? input.macdConfig.slow : defaults.macdConfig.slow,
+      signal: typeof input.macdConfig?.signal === 'number' && input.macdConfig.signal > 0 ? input.macdConfig.signal : defaults.macdConfig.signal,
+    },
+  }
+}
 
 function generateMockBars(count = 120): Bar[] {
   const out: Bar[] = []
@@ -336,35 +398,21 @@ export default function TrainingPage() {
   const [symbol, setSymbol] = useState('BTCUSDT')
   const [interval, setInterval] = useState('15m')
   const [open, setOpen] = useState(false)
-  const [centerState, setCenterState] = useState<IndicatorCenterState>({
-    selectedIds: ['MA', 'EMA', 'RSI', 'MACD'],
-    maLines: [
-      { id: 1, length: 7, color: '#ffffff', width: 1 },
-      { id: 2, length: 30, color: '#f0b90b', width: 2 },
-      { id: 3, length: 0, color: '#a855f7', width: 2 },
-      { id: 4, length: 0, color: '#38bdf8', width: 2 },
-      { id: 5, length: 0, color: '#22c55e', width: 2 },
-      { id: 6, length: 0, color: '#ef4444', width: 2 },
-      { id: 7, length: 0, color: '#60a5fa', width: 2 },
-      { id: 8, length: 0, color: '#f59e0b', width: 2 },
-      { id: 9, length: 0, color: '#9333ea', width: 2 },
-      { id: 10, length: 0, color: '#ec4899', width: 2 }
-    ],
-    emaLines: [
-      { id: 1, length: 0, color: '#ffffff', width: 1 },
-      { id: 2, length: 0, color: '#f0b90b', width: 2 },
-      { id: 3, length: 55, color: '#ef4444', width: 2 },
-      { id: 4, length: 144, color: '#22c55e', width: 2 },
-      { id: 5, length: 233, color: '#ffffff', width: 2 },
-      { id: 6, length: 0, color: '#38bdf8', width: 2 },
-      { id: 7, length: 0, color: '#60a5fa', width: 2 },
-      { id: 8, length: 0, color: '#f59e0b', width: 2 },
-      { id: 9, length: 0, color: '#9333ea', width: 2 },
-      { id: 10, length: 0, color: '#ec4899', width: 2 }
-    ],
-    rsiPeriod: 14,
-    macdConfig: { fast: 12, slow: 26, signal: 9 }
-  })
+  const [profiles, setProfiles] = useState<Record<string, IndicatorCenterState>>(() => loadProfiles())
+  const [centerState, setCenterState] = useState<IndicatorCenterState>(() => sanitizeState(loadProfiles()['BTCUSDT']))
+
+  useEffect(() => {
+    const loaded = sanitizeState(profiles[symbol])
+    setCenterState(loaded)
+  }, [symbol])
+
+  useEffect(() => {
+    setProfiles((prev) => {
+      const next = { ...prev, [symbol]: centerState }
+      saveProfiles(next)
+      return next
+    })
+  }, [symbol, centerState])
 
   const activeMAs = centerState.selectedIds.includes('MA') ? centerState.maLines.filter((line) => line.length > 0) : []
   const activeEMAs = centerState.selectedIds.includes('EMA') ? centerState.emaLines.filter((line) => line.length > 0) : []
@@ -384,6 +432,10 @@ export default function TrainingPage() {
           ))}
         </div>
         <div className="toolbar-actions">
+          <button className="btn secondary compact-btn" onClick={() => {
+            const defaults = defaultIndicatorState()
+            setCenterState(defaults)
+          }} title="恢复当前交易对默认指标">重置</button>
           <button className="btn primary only-icon compact-icon-btn" onClick={() => setOpen(true)} title="指标中心">
             <span className="toolbar-icon">ƒx</span>
           </button>
@@ -395,7 +447,7 @@ export default function TrainingPage() {
           <div className="chart-header stacked compact-chart-header">
             <div className="chart-header-top">
               <div className="chart-title">{symbol} 永续 · {interval}</div>
-              <div className="chart-note">时间轴已隐藏 · v1.2.19 MACD in indicator center</div>
+              <div className="chart-note">时间轴已隐藏 · v1.2.20 localStorage per symbol</div>
             </div>
             <div className="loaded-indicators-bar compact-loaded">
               {activeMAs.map((line) => (
@@ -412,6 +464,7 @@ export default function TrainingPage() {
               ))}
               {centerState.selectedIds.includes('RSI') ? <div className="indicator-chip passive compact-chip"><span className="dot" style={{ background: '#38bdf8' }} />RSI({centerState.rsiPeriod})</div> : null}
               {centerState.selectedIds.includes('MACD') ? <div className="indicator-chip passive compact-chip"><span className="dot" style={{ background: '#f0b90b' }} />MACD({centerState.macdConfig.fast},{centerState.macdConfig.slow},{centerState.macdConfig.signal})</div> : null}
+              <div className="persist-chip">已保存到本地：{symbol}</div>
             </div>
           </div>
           <div className="chart-wrap compact-chart-wrap">
@@ -424,7 +477,7 @@ export default function TrainingPage() {
         open={open}
         value={centerState}
         onClose={() => setOpen(false)}
-        onSave={(next) => { setCenterState(next); setOpen(false) }}
+        onSave={(next) => { setCenterState(sanitizeState(next)); setOpen(false) }}
       />
     </div>
   )
