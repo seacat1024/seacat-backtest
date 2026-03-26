@@ -51,15 +51,8 @@ function calcEMA(values: number[], length: number): Array<number | null> {
   return out
 }
 
-function buildPolylinePoints(
-  series: Array<number | null>,
-  scaleY: (v: number) => number,
-  xForIndex: (i: number) => number,
-): string {
-  return series
-    .map((value, i) => (value === null ? null : `${xForIndex(i)},${scaleY(value)}`))
-    .filter(Boolean)
-    .join(' ')
+function buildPolylinePoints(series: Array<number | null>, scaleY: (v: number) => number, xForIndex: (i: number) => number): string {
+  return series.map((value, i) => value === null ? null : `${xForIndex(i)},${scaleY(value)}`).filter(Boolean).join(' ')
 }
 
 function KlineMockChart({ state }: { state: IndicatorCenterState }) {
@@ -73,7 +66,6 @@ function KlineMockChart({ state }: { state: IndicatorCenterState }) {
   const maSeries = state.selectedIds.includes('MA')
     ? state.maLines.filter((line) => line.length > 0).map((line) => ({ ...line, kind: 'MA' as const, values: calcMA(closes, line.length) }))
     : []
-
   const emaSeries = state.selectedIds.includes('EMA')
     ? state.emaLines.filter((line) => line.length > 0).map((line) => ({ ...line, kind: 'EMA' as const, values: calcEMA(closes, line.length) }))
     : []
@@ -81,14 +73,7 @@ function KlineMockChart({ state }: { state: IndicatorCenterState }) {
   const allSeries = [...maSeries, ...emaSeries]
   const allHighs = bars.map((b) => b.high)
   const allLows = bars.map((b) => b.low)
-  allSeries.forEach((series) => {
-    series.values.forEach((v) => {
-      if (typeof v === 'number') {
-        allHighs.push(v)
-        allLows.push(v)
-      }
-    })
-  })
+  allSeries.forEach((series) => series.values.forEach((v) => { if (typeof v === 'number') { allHighs.push(v); allLows.push(v) } }))
 
   const max = Math.max(...allHighs)
   const min = Math.min(...allLows)
@@ -105,7 +90,6 @@ function KlineMockChart({ state }: { state: IndicatorCenterState }) {
         const y = 20 + i * ((height - 40) / 5)
         return <line key={i} x1="0" y1={y} x2={width} y2={y} stroke="#1f2937" strokeWidth="1" />
       })}
-
       {allSeries.map((line) => (
         <polyline
           key={`${line.kind}-${line.id}`}
@@ -118,7 +102,6 @@ function KlineMockChart({ state }: { state: IndicatorCenterState }) {
           opacity="0.95"
         />
       ))}
-
       {bars.map((b, i) => {
         const x = padLeft + i * candleGap
         const openY = scaleY(b.open)
@@ -178,23 +161,16 @@ export default function TrainingPage() {
     <div className="app-shell">
       <header className="topbar compact-top">
         <div className="brand compact-brand">SeaCat Backtest</div>
-
         <div className="symbol-group">
           {symbols.map((item) => (
-            <button key={item} className={item === symbol ? 'btn active compact-btn' : 'btn compact-btn'} onClick={() => setSymbol(item)}>
-              {item}
-            </button>
+            <button key={item} className={item === symbol ? 'btn active compact-btn' : 'btn compact-btn'} onClick={() => setSymbol(item)}>{item}</button>
           ))}
         </div>
-
         <div className="interval-group">
           {intervals.map((item) => (
-            <button key={item} className={item === interval ? 'btn active compact-btn' : 'btn compact-btn'} onClick={() => setInterval(item)}>
-              {item}
-            </button>
+            <button key={item} className={item === interval ? 'btn active compact-btn' : 'btn compact-btn'} onClick={() => setInterval(item)}>{item}</button>
           ))}
         </div>
-
         <div className="toolbar-actions">
           <button className="btn primary only-icon compact-icon-btn" onClick={() => setOpen(true)} title="指标中心">
             <span className="toolbar-icon">ƒx</span>
@@ -207,9 +183,8 @@ export default function TrainingPage() {
           <div className="chart-header stacked compact-chart-header">
             <div className="chart-header-top">
               <div className="chart-title">{symbol} 永续 · {interval}</div>
-              <div className="chart-note">时间轴已隐藏 · v1.2.14 两行参数版</div>
+              <div className="chart-note">时间轴已隐藏 · v1.2.15 双列参数版</div>
             </div>
-
             <div className="loaded-indicators-bar compact-loaded">
               {activeMAs.map((line) => (
                 <div key={`ma-${line.id}`} className="indicator-chip passive compact-chip">
@@ -223,12 +198,9 @@ export default function TrainingPage() {
                   <span>EMA({line.length})</span>
                 </div>
               ))}
-              {activeMAs.length === 0 && activeEMAs.length === 0 ? (
-                <div className="empty-inline">当前未显示 MA / EMA。</div>
-              ) : null}
+              {activeMAs.length === 0 && activeEMAs.length === 0 ? <div className="empty-inline">当前未显示 MA / EMA。</div> : null}
             </div>
           </div>
-
           <div className="chart-wrap compact-chart-wrap">
             <KlineMockChart state={centerState} />
           </div>
@@ -239,10 +211,7 @@ export default function TrainingPage() {
         open={open}
         value={centerState}
         onClose={() => setOpen(false)}
-        onSave={(next) => {
-          setCenterState(next)
-          setOpen(false)
-        }}
+        onSave={(next) => { setCenterState(next); setOpen(false) }}
       />
     </div>
   )

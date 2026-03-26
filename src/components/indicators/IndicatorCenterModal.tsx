@@ -17,10 +17,10 @@ const LIBRARY: IndicatorLibraryItem[] = [
   { id: 'BOLL', label: 'BOLL', desc: '布林线', kind: 'main' },
   { id: 'RSI', label: 'RSI', desc: '相对强弱指标', kind: 'sub' },
   { id: 'MACD', label: 'MACD', desc: '趋势动量指标', kind: 'sub' },
-  { id: 'KDJ', label: 'KDJ', desc: '随机摆动指标', kind: 'sub' },
+  { id: 'KDJ', label: 'KDJ', desc: '随机摆动指标', kind: 'sub' }
 ]
 
-function SeriesEditor({
+function LineGrid({
   prefix,
   lines,
   updateLine,
@@ -30,51 +30,61 @@ function SeriesEditor({
   updateLine: (id: number, patch: Partial<MultiLineConfig>) => void
 }) {
   return (
-    <div className="rows-grid">
-      {lines.map((line, i) => (
-        <div className="config-row" key={line.id}>
-          <div className="row-label">{prefix}{i + 1}</div>
-          <input
-            className="param-input"
-            type="text"
-            inputMode="numeric"
-            value={line.length === 0 ? '' : String(line.length)}
-            onChange={(e) => {
-              const raw = e.target.value.replace(/[^0-9]/g, '')
-              updateLine(line.id, { length: raw === '' ? 0 : Number(raw) })
-            }}
-            placeholder="0"
-          />
-          <select
-            className="param-select"
-            value={line.width}
-            onChange={(e) => updateLine(line.id, { width: Number(e.target.value) })}
-          >
-            {WIDTHS.map((w) => (
-              <option key={w} value={w}>{w}</option>
-            ))}
-          </select>
-          <div className="swatch-line">
-            {COLORS.map((color) => (
-              <button
-                key={color}
-                className="swatch-dot"
-                style={{ background: color, outline: line.color === color ? '2px solid #fff' : 'none' }}
-                onClick={() => updateLine(line.id, { color })}
-                title={color}
+    <div className="line-editor-grid">
+      {lines.map((line, idx) => (
+        <div className="line-card" key={line.id}>
+          <div className="line-card-top">
+            <div className="line-name">{prefix}{idx + 1}</div>
+            <div className="field-inline">
+              <span className="field-label">周期</span>
+              <input
+                className="param-input"
+                type="text"
+                inputMode="numeric"
+                value={line.length === 0 ? '' : String(line.length)}
+                onChange={(e) => {
+                  const raw = e.target.value.replace(/[^0-9]/g, '')
+                  updateLine(line.id, { length: raw === '' ? 0 : Number(raw) })
+                }}
+                placeholder="0"
               />
-            ))}
-            <input
-              className="row-color-picker"
-              type="color"
-              value={line.color}
-              onChange={(e) => updateLine(line.id, { color: e.target.value })}
-              title="自定义颜色"
-            />
+            </div>
+            <div className="field-inline small">
+              <span className="field-label">宽度</span>
+              <select
+                className="param-select"
+                value={line.width}
+                onChange={(e) => updateLine(line.id, { width: Number(e.target.value) })}
+              >
+                {WIDTHS.map((w) => <option key={w} value={w}>{w}</option>)}
+              </select>
+            </div>
+          </div>
+
+          <div className="line-card-bottom">
+            <div className="color-label">颜色</div>
+            <div className="swatch-line">
+              {COLORS.map((color) => (
+                <button
+                  key={color}
+                  className="swatch-dot"
+                  style={{ background: color, outline: line.color === color ? '2px solid #fff' : 'none' }}
+                  onClick={() => updateLine(line.id, { color })}
+                  title={color}
+                />
+              ))}
+              <input
+                className="row-color-picker"
+                type="color"
+                value={line.color}
+                onChange={(e) => updateLine(line.id, { color: e.target.value })}
+                title="自定义颜色"
+              />
+            </div>
           </div>
         </div>
       ))}
-      <div className="hint-line">填 0 或留空 = 不显示；填数值 = 显示。</div>
+      <div className="grid-hint">填 0 或留空 = 不显示；填数值 = 显示。</div>
     </div>
   )
 }
@@ -84,11 +94,10 @@ export default function IndicatorCenterModal({ open, value, onClose, onSave }: P
   const [activeId, setActiveId] = useState<string>('MA')
   const [draft, setDraft] = useState<IndicatorCenterState>(value)
 
-  const visibleList = useMemo(() => {
-    return leftTab === 'all'
-      ? LIBRARY
-      : LIBRARY.filter((item) => draft.selectedIds.includes(item.id))
-  }, [leftTab, draft.selectedIds])
+  const visibleList = useMemo(
+    () => leftTab === 'all' ? LIBRARY : LIBRARY.filter((item) => draft.selectedIds.includes(item.id)),
+    [leftTab, draft.selectedIds]
+  )
 
   if (!open) return null
 
@@ -106,7 +115,7 @@ export default function IndicatorCenterModal({ open, value, onClose, onSave }: P
   const updateLines = (key: 'maLines' | 'emaLines', id: number, patch: Partial<MultiLineConfig>) => {
     setDraft((prev) => ({
       ...prev,
-      [key]: prev[key].map((line) => (line.id === id ? { ...line, ...patch } : line)),
+      [key]: prev[key].map((line) => line.id === id ? { ...line, ...patch } : line)
     }))
   }
 
@@ -153,11 +162,11 @@ export default function IndicatorCenterModal({ open, value, onClose, onSave }: P
             </div>
 
             {activeId === 'MA' ? (
-              <SeriesEditor prefix="MA" lines={draft.maLines} updateLine={(id, patch) => updateLines('maLines', id, patch)} />
+              <LineGrid prefix="MA" lines={draft.maLines} updateLine={(id, patch) => updateLines('maLines', id, patch)} />
             ) : activeId === 'EMA' ? (
-              <SeriesEditor prefix="EMA" lines={draft.emaLines} updateLine={(id, patch) => updateLines('emaLines', id, patch)} />
+              <LineGrid prefix="EMA" lines={draft.emaLines} updateLine={(id, patch) => updateLines('emaLines', id, patch)} />
             ) : (
-              <div className="coming-soon">这一版先把指标中心比例重做。RSI / MACD / KDJ 下一版继续接副图。</div>
+              <div className="coming-soon">这一版先把右侧改成双列卡片。RSI / MACD / KDJ 下一版继续接副图。</div>
             )}
           </section>
         </div>
