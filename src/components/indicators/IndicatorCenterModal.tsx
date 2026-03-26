@@ -60,7 +60,6 @@ function LineGrid({
               </select>
             </div>
           </div>
-
           <div className="line-card-bottom">
             <div className="color-label">颜色</div>
             <div className="swatch-line">

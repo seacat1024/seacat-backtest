@@ -3,6 +3,14 @@ import IndicatorCenterModal from '../components/indicators/IndicatorCenterModal'
 import type { IndicatorCenterState } from '../components/indicators/types'
 
 type Bar = { open: number; high: number; low: number; close: number }
+type HoverData = {
+  index: number
+  x: number
+  y: number
+  bar: Bar
+  maValues: Array<{ label: string; value: number }>
+  emaValues: Array<{ label: string; value: number }>
+} | null
 
 const intervals = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1W']
 const symbols = ['BTCUSDT', 'ETHUSDT']
@@ -57,6 +65,7 @@ function buildPolylinePoints(series: Array<number | null>, scaleY: (v: number) =
 
 function KlineMockChart({ state }: { state: IndicatorCenterState }) {
   const bars = useMemo(() => generateMockBars(100), [])
+  const [hover, setHover] = useState<HoverData>(null)
   const width = 1100
   const height = 420
   const padLeft = 20
@@ -84,41 +93,74 @@ function KlineMockChart({ state }: { state: IndicatorCenterState }) {
   const xForIndex = (i: number) => padLeft + i * candleGap + 3
 
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} className="chart-svg">
-      <rect x="0" y="0" width={width} height={height} fill="#0b0e11" />
-      {Array.from({ length: 6 }).map((_, i) => {
-        const y = 20 + i * ((height - 40) / 5)
-        return <line key={i} x1="0" y1={y} x2={width} y2={y} stroke="#1f2937" strokeWidth="1" />
-      })}
-      {allSeries.map((line) => (
-        <polyline
-          key={`${line.kind}-${line.id}`}
-          points={buildPolylinePoints(line.values, scaleY, xForIndex)}
-          fill="none"
-          stroke={line.color}
-          strokeWidth={line.width}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          opacity="0.95"
-        />
-      ))}
-      {bars.map((b, i) => {
-        const x = padLeft + i * candleGap
-        const openY = scaleY(b.open)
-        const closeY = scaleY(b.close)
-        const highY = scaleY(b.high)
-        const lowY = scaleY(b.low)
-        const up = b.close >= b.open
-        const bodyY = Math.min(openY, closeY)
-        const bodyH = Math.max(2, Math.abs(closeY - openY))
-        return (
-          <g key={i}>
-            <line x1={x + 3} y1={highY} x2={x + 3} y2={lowY} stroke={up ? '#0ECB81' : '#F6465D'} strokeWidth="1.1" />
-            <rect x={x} y={bodyY} width="6" height={bodyH} fill={up ? '#0ECB81' : '#F6465D'} rx="1" />
+    <div className="chart-stage">
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        className="chart-svg"
+        onMouseMove={(e) => {
+          const rect = (e.currentTarget as SVGSVGElement).getBoundingClientRect()
+          const px = ((e.clientX - rect.left) / rect.width) * width
+          const py = ((e.clientY - rect.top) / rect.height) * height
+          const idx = Math.max(0, Math.min(bars.length - 1, Math.round((px - padLeft - 3) / candleGap)))
+          const bar = bars[idx]
+          const maValues = maSeries.map((s) => ({ label: `MA(${s.length})`, value: s.values[idx] })).filter((x): x is { label: string; value: number } => typeof x.value === 'number')
+          const emaValues = emaSeries.map((s) => ({ label: `EMA(${s.length})`, value: s.values[idx] })).filter((x): x is { label: string; value: number } => typeof x.value === 'number')
+          setHover({ index: idx, x: xForIndex(idx), y: py, bar, maValues, emaValues })
+        }}
+        onMouseLeave={() => setHover(null)}
+      >
+        <rect x="0" y="0" width={width} height={height} fill="#0b0e11" />
+        {Array.from({ length: 6 }).map((_, i) => {
+          const y = 20 + i * ((height - 40) / 5)
+          return <line key={i} x1="0" y1={y} x2={width} y2={y} stroke="#1f2937" strokeWidth="1" />
+        })}
+        {allSeries.map((line) => (
+          <polyline
+            key={`${line.kind}-${line.id}`}
+            points={buildPolylinePoints(line.values, scaleY, xForIndex)}
+            fill="none"
+            stroke={line.color}
+            strokeWidth={line.width}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            opacity="0.95"
+          />
+        ))}
+        {bars.map((b, i) => {
+          const x = padLeft + i * candleGap
+          const openY = scaleY(b.open)
+          const closeY = scaleY(b.close)
+          const highY = scaleY(b.high)
+          const lowY = scaleY(b.low)
+          const up = b.close >= b.open
+          const bodyY = Math.min(openY, closeY)
+          const bodyH = Math.max(2, Math.abs(closeY - openY))
+          return (
+            <g key={i}>
+              <line x1={x + 3} y1={highY} x2={x + 3} y2={lowY} stroke={up ? '#0ECB81' : '#F6465D'} strokeWidth="1.1" />
+              <rect x={x} y={bodyY} width="6" height={bodyH} fill={up ? '#0ECB81' : '#F6465D'} rx="1" />
+            </g>
+          )
+        })}
+        {hover ? (
+          <g>
+            <line x1={hover.x} y1="0" x2={hover.x} y2={height} stroke="#94a3b8" strokeDasharray="4 4" strokeWidth="1" opacity="0.9" />
+            <line x1="0" y1={hover.y} x2={width} y2={hover.y} stroke="#94a3b8" strokeDasharray="4 4" strokeWidth="1" opacity="0.9" />
           </g>
-        )
-      })}
-    </svg>
+        ) : null}
+      </svg>
+      {hover ? (
+        <div className="hover-panel">
+          <div className="hover-title">K线 {hover.index + 1}</div>
+          <div className="hover-row"><span>开</span><strong>{hover.bar.open.toFixed(2)}</strong></div>
+          <div className="hover-row"><span>高</span><strong>{hover.bar.high.toFixed(2)}</strong></div>
+          <div className="hover-row"><span>低</span><strong>{hover.bar.low.toFixed(2)}</strong></div>
+          <div className="hover-row"><span>收</span><strong>{hover.bar.close.toFixed(2)}</strong></div>
+          {hover.maValues.map((item) => <div className="hover-row" key={item.label}><span>{item.label}</span><strong>{item.value.toFixed(2)}</strong></div>)}
+          {hover.emaValues.map((item) => <div className="hover-row" key={item.label}><span>{item.label}</span><strong>{item.value.toFixed(2)}</strong></div>)}
+        </div>
+      ) : null}
+    </div>
   )
 }
 
@@ -183,7 +225,7 @@ export default function TrainingPage() {
           <div className="chart-header stacked compact-chart-header">
             <div className="chart-header-top">
               <div className="chart-title">{symbol} 永续 · {interval}</div>
-              <div className="chart-note">时间轴已隐藏 · v1.2.15 双列参数版</div>
+              <div className="chart-note">时间轴已隐藏 · v1.2.16 图标+十字线版</div>
             </div>
             <div className="loaded-indicators-bar compact-loaded">
               {activeMAs.map((line) => (
