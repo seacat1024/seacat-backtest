@@ -109,3 +109,21 @@ button, input, select { font: inherit; }
   .center-left, .center-list { border-right:none; border-bottom:1px solid #303544; }
   .line-editor-grid { grid-template-columns: 1fr; }
 }
+
+
+.single-param-panel {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  max-width: 420px;
+}
+.single-param-row {
+  display: grid;
+  grid-template-columns: 80px 1fr;
+  gap: 10px;
+  align-items: center;
+}
+.single-param-label {
+  font-size: 12px;
+  color: #cbd5e1;
+}

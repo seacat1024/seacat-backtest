@@ -20,6 +20,24 @@ const LIBRARY: IndicatorLibraryItem[] = [
   { id: 'KDJ', label: 'KDJ', desc: '随机摆动指标', kind: 'sub' }
 ]
 
+function NumberField({ label, value, onChange }: { label: string; value: number; onChange: (next: number) => void }) {
+  return (
+    <div className="single-param-row">
+      <div className="single-param-label">{label}</div>
+      <input
+        className="param-input"
+        type="text"
+        inputMode="numeric"
+        value={String(value)}
+        onChange={(e) => {
+          const raw = e.target.value.replace(/[^0-9]/g, '')
+          onChange(raw === '' ? 0 : Number(raw))
+        }}
+      />
+    </div>
+  )
+}
+
 function LineGrid({
   prefix,
   lines,
@@ -51,11 +69,7 @@ function LineGrid({
             </div>
             <div className="field-inline small">
               <span className="field-label">宽度</span>
-              <select
-                className="param-select"
-                value={line.width}
-                onChange={(e) => updateLine(line.id, { width: Number(e.target.value) })}
-              >
+              <select className="param-select" value={line.width} onChange={(e) => updateLine(line.id, { width: Number(e.target.value) })}>
                 {WIDTHS.map((w) => <option key={w} value={w}>{w}</option>)}
               </select>
             </div>
@@ -72,13 +86,7 @@ function LineGrid({
                   title={color}
                 />
               ))}
-              <input
-                className="row-color-picker"
-                type="color"
-                value={line.color}
-                onChange={(e) => updateLine(line.id, { color: e.target.value })}
-                title="自定义颜色"
-              />
+              <input className="row-color-picker" type="color" value={line.color} onChange={(e) => updateLine(line.id, { color: e.target.value })} title="自定义颜色" />
             </div>
           </div>
         </div>
@@ -103,19 +111,13 @@ export default function IndicatorCenterModal({ open, value, onClose, onSave }: P
   const toggleSelected = (id: string) => {
     setDraft((prev) => {
       const exists = prev.selectedIds.includes(id)
-      return {
-        ...prev,
-        selectedIds: exists ? prev.selectedIds.filter((x) => x !== id) : [...prev.selectedIds, id],
-      }
+      return { ...prev, selectedIds: exists ? prev.selectedIds.filter((x) => x !== id) : [...prev.selectedIds, id] }
     })
     setActiveId(id)
   }
 
   const updateLines = (key: 'maLines' | 'emaLines', id: number, patch: Partial<MultiLineConfig>) => {
-    setDraft((prev) => ({
-      ...prev,
-      [key]: prev[key].map((line) => line.id === id ? { ...line, ...patch } : line)
-    }))
+    setDraft((prev) => ({ ...prev, [key]: prev[key].map((line) => line.id === id ? { ...line, ...patch } : line) }))
   }
 
   return (
@@ -136,11 +138,7 @@ export default function IndicatorCenterModal({ open, value, onClose, onSave }: P
             <div className="search-lite">搜索指标</div>
             <div className="indicator-list2">
               {visibleList.map((item) => (
-                <button
-                  key={item.id}
-                  className={activeId === item.id ? 'indicator-item2 active' : 'indicator-item2'}
-                  onClick={() => setActiveId(item.id)}
-                >
+                <button key={item.id} className={activeId === item.id ? 'indicator-item2 active' : 'indicator-item2'} onClick={() => setActiveId(item.id)}>
                   <div className="indicator-check" onClick={(e) => { e.stopPropagation(); toggleSelected(item.id) }}>
                     {draft.selectedIds.includes(item.id) ? '✓' : ''}
                   </div>
@@ -164,8 +162,18 @@ export default function IndicatorCenterModal({ open, value, onClose, onSave }: P
               <LineGrid prefix="MA" lines={draft.maLines} updateLine={(id, patch) => updateLines('maLines', id, patch)} />
             ) : activeId === 'EMA' ? (
               <LineGrid prefix="EMA" lines={draft.emaLines} updateLine={(id, patch) => updateLines('emaLines', id, patch)} />
+            ) : activeId === 'RSI' ? (
+              <div className="single-param-panel">
+                <NumberField label="Period" value={draft.rsiPeriod} onChange={(next) => setDraft((prev) => ({ ...prev, rsiPeriod: next || 14 }))} />
+              </div>
+            ) : activeId === 'MACD' ? (
+              <div className="single-param-panel">
+                <NumberField label="Fast" value={draft.macdConfig.fast} onChange={(next) => setDraft((prev) => ({ ...prev, macdConfig: { ...prev.macdConfig, fast: next || 12 } }))} />
+                <NumberField label="Slow" value={draft.macdConfig.slow} onChange={(next) => setDraft((prev) => ({ ...prev, macdConfig: { ...prev.macdConfig, slow: next || 26 } }))} />
+                <NumberField label="Signal" value={draft.macdConfig.signal} onChange={(next) => setDraft((prev) => ({ ...prev, macdConfig: { ...prev.macdConfig, signal: next || 9 } }))} />
+              </div>
             ) : (
-              <div className="coming-soon">RSI / MACD 已接入主界面副图。这里的参数中心下一版再扩展副图参数。</div>
+              <div className="coming-soon">这一版先接入 MACD 参数。KDJ / BOLL 下一版继续。</div>
             )}
           </section>
         </div>

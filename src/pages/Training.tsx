@@ -87,14 +87,14 @@ function calcRSI(values: number[], period = 14): Array<number | null> {
   return out
 }
 
-function calcMACD(values: number[]) {
-  const ema12 = calcEMA(values, 12)
-  const ema26 = calcEMA(values, 26)
+function calcMACD(values: number[], fast = 12, slow = 26, signalPeriod = 9) {
+  const emaFast = calcEMA(values, fast)
+  const emaSlow = calcEMA(values, slow)
   const macd: Array<number | null> = values.map((_, i) => (
-    typeof ema12[i] === 'number' && typeof ema26[i] === 'number' ? (ema12[i] as number) - (ema26[i] as number) : null
+    typeof emaFast[i] === 'number' && typeof emaSlow[i] === 'number' ? (emaFast[i] as number) - (emaSlow[i] as number) : null
   ))
   const macdClean = macd.map(v => v ?? 0)
-  const signalBase = calcEMA(macdClean, 9)
+  const signalBase = calcEMA(macdClean, signalPeriod)
   const signal = macd.map((v, i) => (v === null || signalBase[i] === null ? null : signalBase[i]))
   const hist = macd.map((v, i) => (
     v === null || signal[i] === null ? null : v - (signal[i] as number)
@@ -109,22 +109,26 @@ function buildPolylinePoints(series: Array<number | null>, scaleY: (v: number) =
 function IndicatorSubcharts({
   closes,
   xForIndex,
-  candleGap,
   hoverIndex,
+  rsiPeriod,
+  macdConfig,
+  showRsi,
+  showMacd,
 }: {
   closes: number[]
   xForIndex: (i: number) => number
-  candleGap: number
   hoverIndex: number | null
+  rsiPeriod: number
+  macdConfig: { fast: number; slow: number; signal: number }
+  showRsi: boolean
+  showMacd: boolean
 }) {
-  const rsi = useMemo(() => calcRSI(closes, 14), [closes])
-  const { macd, signal, hist } = useMemo(() => calcMACD(closes), [closes])
-
+  const rsi = useMemo(() => calcRSI(closes, rsiPeriod), [closes, rsiPeriod])
+  const { macd, signal, hist } = useMemo(() => calcMACD(closes, macdConfig.fast, macdConfig.slow, macdConfig.signal), [closes, macdConfig])
   const width = 1100
   const rsiTop = 18
   const rsiBottom = 122
   const scaleRsi = (v: number) => rsiBottom - (v / 100) * (rsiBottom - rsiTop)
-
   const macdVals = [...macd, ...signal, ...hist].filter((v): v is number => typeof v === 'number')
   const macdAbsRaw = macdVals.length ? Math.max(...macdVals.map(v => Math.abs(v))) : 1
   const macdAbs = Math.max(macdAbsRaw * 1.25, 0.5)
@@ -136,55 +140,59 @@ function IndicatorSubcharts({
 
   return (
     <div className="subcharts">
-      <div className="subchart-box">
-        <div className="subchart-head">
-          <span>RSI(14)</span>
-          {hoverIndex !== null && typeof rsi[hoverIndex] === 'number' ? <span className="subchart-value">RSI {fmt(rsi[hoverIndex] as number)}</span> : null}
+      {showRsi ? (
+        <div className="subchart-box">
+          <div className="subchart-head">
+            <span>RSI({rsiPeriod})</span>
+            {hoverIndex !== null && typeof rsi[hoverIndex] === 'number' ? <span className="subchart-value">RSI {fmt(rsi[hoverIndex] as number)}</span> : null}
+          </div>
+          <svg viewBox={`0 0 ${width} 140`} className="subchart-svg">
+            <rect x="0" y="0" width={width} height="140" fill="#0b0e11" />
+            <line x1="0" y1={scaleRsi(70)} x2={width} y2={scaleRsi(70)} stroke="#475569" strokeDasharray="4 4" />
+            <line x1="0" y1={scaleRsi(50)} x2={width} y2={scaleRsi(50)} stroke="#334155" strokeDasharray="3 5" />
+            <line x1="0" y1={scaleRsi(30)} x2={width} y2={scaleRsi(30)} stroke="#475569" strokeDasharray="4 4" />
+            <text x="6" y={scaleRsi(70)-4} fill="#94a3b8" fontSize="10">70</text>
+            <text x="6" y={scaleRsi(50)-4} fill="#64748b" fontSize="10">50</text>
+            <text x="6" y={scaleRsi(30)-4} fill="#94a3b8" fontSize="10">30</text>
+            <polyline points={buildPolylinePoints(rsi, scaleRsi, xForIndex)} fill="none" stroke="#38bdf8" strokeWidth="2" />
+            {hoverIndex !== null ? <line x1={xForIndex(hoverIndex)} y1="0" x2={xForIndex(hoverIndex)} y2="140" stroke="#94a3b8" strokeDasharray="4 4" /> : null}
+          </svg>
         </div>
-        <svg viewBox={`0 0 ${width} 140`} className="subchart-svg">
-          <rect x="0" y="0" width={width} height="140" fill="#0b0e11" />
-          <line x1="0" y1={scaleRsi(70)} x2={width} y2={scaleRsi(70)} stroke="#475569" strokeDasharray="4 4" />
-          <line x1="0" y1={scaleRsi(50)} x2={width} y2={scaleRsi(50)} stroke="#334155" strokeDasharray="3 5" />
-          <line x1="0" y1={scaleRsi(30)} x2={width} y2={scaleRsi(30)} stroke="#475569" strokeDasharray="4 4" />
-          <text x="6" y={scaleRsi(70)-4} fill="#94a3b8" fontSize="10">70</text>
-          <text x="6" y={scaleRsi(50)-4} fill="#64748b" fontSize="10">50</text>
-          <text x="6" y={scaleRsi(30)-4} fill="#94a3b8" fontSize="10">30</text>
-          <polyline points={buildPolylinePoints(rsi, scaleRsi, xForIndex)} fill="none" stroke="#38bdf8" strokeWidth="2" />
-          {hoverIndex !== null ? <line x1={xForIndex(hoverIndex)} y1="0" x2={xForIndex(hoverIndex)} y2="140" stroke="#94a3b8" strokeDasharray="4 4" /> : null}
-        </svg>
-      </div>
+      ) : null}
 
-      <div className="subchart-box">
-        <div className="subchart-head">
-          <span>MACD(12,26,9)</span>
-          {hoverIndex !== null ? (
-            <span className="subchart-value">
-              {typeof macd[hoverIndex] === 'number' ? `MACD ${fmt(macd[hoverIndex] as number)}` : ''}{" "}
-              {typeof signal[hoverIndex] === 'number' ? `Signal ${fmt(signal[hoverIndex] as number)}` : ''}{" "}
-              {typeof hist[hoverIndex] === 'number' ? `Hist ${fmt(hist[hoverIndex] as number)}` : ''}
-            </span>
-          ) : null}
+      {showMacd ? (
+        <div className="subchart-box">
+          <div className="subchart-head">
+            <span>MACD({macdConfig.fast},{macdConfig.slow},{macdConfig.signal})</span>
+            {hoverIndex !== null ? (
+              <span className="subchart-value">
+                {typeof macd[hoverIndex] === 'number' ? `MACD ${fmt(macd[hoverIndex] as number)}` : ''}{" "}
+                {typeof signal[hoverIndex] === 'number' ? `Signal ${fmt(signal[hoverIndex] as number)}` : ''}{" "}
+                {typeof hist[hoverIndex] === 'number' ? `Hist ${fmt(hist[hoverIndex] as number)}` : ''}
+              </span>
+            ) : null}
+          </div>
+          <svg viewBox={`0 0 ${width} 140`} className="subchart-svg">
+            <rect x="0" y="0" width={width} height="140" fill="#0b0e11" />
+            <line x1="0" y1={scaleMacd(macdAbs)} x2={width} y2={scaleMacd(macdAbs)} stroke="#1e293b" strokeDasharray="3 5" />
+            <line x1="0" y1={scaleMacd(0)} x2={width} y2={scaleMacd(0)} stroke="#334155" />
+            <line x1="0" y1={scaleMacd(-macdAbs)} x2={width} y2={scaleMacd(-macdAbs)} stroke="#1e293b" strokeDasharray="3 5" />
+            <text x="6" y={scaleMacd(macdAbs)-4} fill="#64748b" fontSize="10">{fmt(macdAbs)}</text>
+            <text x="6" y={scaleMacd(0)-4} fill="#94a3b8" fontSize="10">0</text>
+            <text x="6" y={scaleMacd(-macdAbs)-4} fill="#64748b" fontSize="10">{fmt(-macdAbs)}</text>
+            {hist.map((v, i) => {
+              if (v === null) return null
+              const x = xForIndex(i) - 2
+              const y0 = scaleMacd(0)
+              const y = scaleMacd(v)
+              return <rect key={i} x={x} y={Math.min(y, y0)} width="5" height={Math.max(1, Math.abs(y0 - y))} fill={v >= 0 ? '#22c55e' : '#ef4444'} opacity="0.9" />
+            })}
+            <polyline points={buildPolylinePoints(macd, scaleMacd, xForIndex)} fill="none" stroke="#f0b90b" strokeWidth="2" />
+            <polyline points={buildPolylinePoints(signal, scaleMacd, xForIndex)} fill="none" stroke="#60a5fa" strokeWidth="2" />
+            {hoverIndex !== null ? <line x1={xForIndex(hoverIndex)} y1="0" x2={xForIndex(hoverIndex)} y2="140" stroke="#94a3b8" strokeDasharray="4 4" /> : null}
+          </svg>
         </div>
-        <svg viewBox={`0 0 ${width} 140`} className="subchart-svg">
-          <rect x="0" y="0" width={width} height="140" fill="#0b0e11" />
-          <line x1="0" y1={scaleMacd(macdAbs)} x2={width} y2={scaleMacd(macdAbs)} stroke="#1e293b" strokeDasharray="3 5" />
-          <line x1="0" y1={scaleMacd(0)} x2={width} y2={scaleMacd(0)} stroke="#334155" />
-          <line x1="0" y1={scaleMacd(-macdAbs)} x2={width} y2={scaleMacd(-macdAbs)} stroke="#1e293b" strokeDasharray="3 5" />
-          <text x="6" y={scaleMacd(macdAbs)-4} fill="#64748b" fontSize="10">{fmt(macdAbs)}</text>
-          <text x="6" y={scaleMacd(0)-4} fill="#94a3b8" fontSize="10">0</text>
-          <text x="6" y={scaleMacd(-macdAbs)-4} fill="#64748b" fontSize="10">{fmt(-macdAbs)}</text>
-          {hist.map((v, i) => {
-            if (v === null) return null
-            const x = xForIndex(i) - 2
-            const y0 = scaleMacd(0)
-            const y = scaleMacd(v)
-            return <rect key={i} x={x} y={Math.min(y, y0)} width="5" height={Math.max(1, Math.abs(y0 - y))} fill={v >= 0 ? '#22c55e' : '#ef4444'} opacity="0.9" />
-          })}
-          <polyline points={buildPolylinePoints(macd, scaleMacd, xForIndex)} fill="none" stroke="#f0b90b" strokeWidth="2" />
-          <polyline points={buildPolylinePoints(signal, scaleMacd, xForIndex)} fill="none" stroke="#60a5fa" strokeWidth="2" />
-          {hoverIndex !== null ? <line x1={xForIndex(hoverIndex)} y1="0" x2={xForIndex(hoverIndex)} y2="140" stroke="#94a3b8" strokeDasharray="4 4" /> : null}
-        </svg>
-      </div>
+      ) : null}
     </div>
   )
 }
@@ -204,8 +212,12 @@ function KlineMockChart({ state }: { state: IndicatorCenterState }) {
   const emaSeries = state.selectedIds.includes('EMA')
     ? state.emaLines.filter((line) => line.length > 0).map((line) => ({ ...line, kind: 'EMA' as const, values: calcEMA(closes, line.length) }))
     : []
-  const rsi = useMemo(() => calcRSI(closes, 14), [closes])
-  const { macd, signal, hist } = useMemo(() => calcMACD(closes), [closes])
+
+  const rsi = useMemo(() => calcRSI(closes, state.rsiPeriod), [closes, state.rsiPeriod])
+  const { macd, signal, hist } = useMemo(
+    () => calcMACD(closes, state.macdConfig.fast, state.macdConfig.slow, state.macdConfig.signal),
+    [closes, state.macdConfig]
+  )
 
   const allSeries = [...maSeries, ...emaSeries]
   const allHighs = bars.map((b) => b.high)
@@ -299,7 +311,7 @@ function KlineMockChart({ state }: { state: IndicatorCenterState }) {
             <div className="hover-row"><span>收</span><strong>{hover.bar.close.toFixed(2)}</strong></div>
             {hover.maValues.map((item) => <div className="hover-row" key={item.label}><span>{item.label}</span><strong>{item.value.toFixed(2)}</strong></div>)}
             {hover.emaValues.map((item) => <div className="hover-row" key={item.label}><span>{item.label}</span><strong>{item.value.toFixed(2)}</strong></div>)}
-            {typeof hover.rsi === 'number' ? <div className="hover-row"><span>RSI(14)</span><strong>{hover.rsi.toFixed(2)}</strong></div> : null}
+            {typeof hover.rsi === 'number' ? <div className="hover-row"><span>RSI({state.rsiPeriod})</span><strong>{hover.rsi.toFixed(2)}</strong></div> : null}
             {typeof hover.macd === 'number' ? <div className="hover-row"><span>MACD</span><strong>{hover.macd.toFixed(2)}</strong></div> : null}
             {typeof hover.signal === 'number' ? <div className="hover-row"><span>Signal</span><strong>{hover.signal.toFixed(2)}</strong></div> : null}
             {typeof hover.hist === 'number' ? <div className="hover-row"><span>Hist</span><strong>{hover.hist.toFixed(2)}</strong></div> : null}
@@ -310,8 +322,11 @@ function KlineMockChart({ state }: { state: IndicatorCenterState }) {
       <IndicatorSubcharts
         closes={closes}
         xForIndex={xForIndex}
-        candleGap={candleGap}
         hoverIndex={hover ? hover.index : null}
+        rsiPeriod={state.rsiPeriod}
+        macdConfig={state.macdConfig}
+        showRsi={state.selectedIds.includes('RSI')}
+        showMacd={state.selectedIds.includes('MACD')}
       />
     </>
   )
@@ -322,7 +337,7 @@ export default function TrainingPage() {
   const [interval, setInterval] = useState('15m')
   const [open, setOpen] = useState(false)
   const [centerState, setCenterState] = useState<IndicatorCenterState>({
-    selectedIds: ['MA', 'EMA'],
+    selectedIds: ['MA', 'EMA', 'RSI', 'MACD'],
     maLines: [
       { id: 1, length: 7, color: '#ffffff', width: 1 },
       { id: 2, length: 30, color: '#f0b90b', width: 2 },
@@ -346,7 +361,9 @@ export default function TrainingPage() {
       { id: 8, length: 0, color: '#f59e0b', width: 2 },
       { id: 9, length: 0, color: '#9333ea', width: 2 },
       { id: 10, length: 0, color: '#ec4899', width: 2 }
-    ]
+    ],
+    rsiPeriod: 14,
+    macdConfig: { fast: 12, slow: 26, signal: 9 }
   })
 
   const activeMAs = centerState.selectedIds.includes('MA') ? centerState.maLines.filter((line) => line.length > 0) : []
@@ -378,7 +395,7 @@ export default function TrainingPage() {
           <div className="chart-header stacked compact-chart-header">
             <div className="chart-header-top">
               <div className="chart-title">{symbol} 永续 · {interval}</div>
-              <div className="chart-note">时间轴已隐藏 · v1.2.18 scales + MACD padding</div>
+              <div className="chart-note">时间轴已隐藏 · v1.2.19 MACD in indicator center</div>
             </div>
             <div className="loaded-indicators-bar compact-loaded">
               {activeMAs.map((line) => (
@@ -393,8 +410,8 @@ export default function TrainingPage() {
                   <span>EMA({line.length})</span>
                 </div>
               ))}
-              <div className="indicator-chip passive compact-chip"><span className="dot" style={{ background: '#38bdf8' }} />RSI(14)</div>
-              <div className="indicator-chip passive compact-chip"><span className="dot" style={{ background: '#f0b90b' }} />MACD</div>
+              {centerState.selectedIds.includes('RSI') ? <div className="indicator-chip passive compact-chip"><span className="dot" style={{ background: '#38bdf8' }} />RSI({centerState.rsiPeriod})</div> : null}
+              {centerState.selectedIds.includes('MACD') ? <div className="indicator-chip passive compact-chip"><span className="dot" style={{ background: '#f0b90b' }} />MACD({centerState.macdConfig.fast},{centerState.macdConfig.slow},{centerState.macdConfig.signal})</div> : null}
             </div>
           </div>
           <div className="chart-wrap compact-chart-wrap">

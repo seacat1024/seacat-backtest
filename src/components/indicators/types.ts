@@ -12,8 +12,16 @@ export type MultiLineConfig = {
   width: number
 }
 
+export type MacdConfig = {
+  fast: number
+  slow: number
+  signal: number
+}
+
 export type IndicatorCenterState = {
   selectedIds: string[]
   maLines: MultiLineConfig[]
   emaLines: MultiLineConfig[]
+  rsiPeriod: number
+  macdConfig: MacdConfig
 }
