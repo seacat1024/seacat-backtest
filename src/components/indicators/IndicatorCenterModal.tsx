@@ -165,7 +165,7 @@ export default function IndicatorCenterModal({ open, value, onClose, onSave }: P
             ) : activeId === 'EMA' ? (
               <LineGrid prefix="EMA" lines={draft.emaLines} updateLine={(id, patch) => updateLines('emaLines', id, patch)} />
             ) : (
-              <div className="coming-soon">这一版先把右侧改成双列卡片。RSI / MACD / KDJ 下一版继续接副图。</div>
+              <div className="coming-soon">RSI / MACD 已接入主界面副图。这里的参数中心下一版再扩展副图参数。</div>
             )}
           </section>
         </div>

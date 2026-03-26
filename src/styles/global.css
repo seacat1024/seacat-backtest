@@ -9,10 +9,7 @@ body {
 button, input, select { font: inherit; }
 .app-shell { min-height: 100%; display: flex; flex-direction: column; }
 
-.topbar {
-  display: flex; align-items: center; gap: 8px; padding: 8px 12px;
-  border-bottom: 1px solid #1f2937; background: #111827;
-}
+.topbar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid #1f2937; background: #111827; }
 .compact-top { min-height: 48px; }
 .brand { font-size: 17px; font-weight: 700; color: #f9fafb; margin-right: 6px; }
 .compact-brand { font-size: 16px; }
@@ -35,7 +32,6 @@ button, input, select { font: inherit; }
 .chart-note { font-size: 10px; color: #9ca3af; }
 .loaded-indicators-bar { display:flex; flex-wrap:wrap; gap:5px; min-height:24px; align-items:center; }
 .compact-loaded { gap: 5px; min-height: 24px; }
-.empty-inline { color:#6b7280; font-size:12px; }
 .indicator-chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid #263244; background: #0f1724; color: #e5e7eb; border-radius: 999px; padding: 4px 8px; font-size: 12px; }
 .indicator-chip.passive { cursor: default; }
 .compact-chip { padding: 2px 6px; font-size: 11px; }
@@ -44,21 +40,20 @@ button, input, select { font: inherit; }
 .compact-chart-wrap { padding: 6px; }
 
 .chart-stage { position: relative; }
-.chart-svg { width: 100%; height: 100%; min-height: 680px; display:block; border-radius:10px; background:#0b0e11; }
+.chart-svg { width: 100%; height: 100%; min-height: 520px; display:block; border-radius:10px; background:#0b0e11; }
 .hover-panel {
-  position: absolute;
-  top: 12px;
-  left: 12px;
-  width: 168px;
-  border: 1px solid #334155;
-  background: rgba(15, 23, 36, 0.96);
-  border-radius: 10px;
-  padding: 10px;
-  backdrop-filter: blur(6px);
+  position: absolute; top: 12px; left: 12px; width: 172px;
+  border: 1px solid #334155; background: rgba(15, 23, 36, 0.96);
+  border-radius: 10px; padding: 10px; backdrop-filter: blur(6px);
 }
 .hover-title { font-size: 12px; font-weight: 700; color: #f8fafc; margin-bottom: 6px; }
 .hover-row { display:flex; align-items:center; justify-content:space-between; gap:10px; font-size: 11px; color:#cbd5e1; margin-bottom: 4px; }
 .hover-row strong { color:#ffffff; font-weight:700; }
+
+.subcharts { display: grid; grid-template-columns: 1fr; gap: 6px; margin-top: 6px; }
+.subchart-box { border: 1px solid #1f2937; border-radius: 10px; overflow: hidden; background: #0f1724; }
+.subchart-head { padding: 6px 10px; font-size: 11px; color: #cbd5e1; border-bottom: 1px solid #1f2937; }
+.subchart-svg { width: 100%; height: 140px; display: block; }
 
 /* Modal */
 .center-mask { position: fixed; inset: 0; background: rgba(3,7,18,.55); display: flex; align-items: center; justify-content: center; padding: 12px; z-index: 100; }
@@ -89,7 +84,6 @@ button, input, select { font: inherit; }
 .settings-title { font-weight:700; font-size:13px; }
 .reset-link { background:none; border:none; color:#4f8dff; cursor:pointer; font-size: 12px; }
 
-/* 双列卡片 */
 .line-editor-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px; align-items: start; }
 .line-card { border: 1px solid #303544; background: #20232f; border-radius: 10px; padding: 7px 8px; }
 .line-card-top { display: grid; grid-template-columns: 38px 1fr 84px; gap: 6px; align-items: center; margin-bottom: 6px; }

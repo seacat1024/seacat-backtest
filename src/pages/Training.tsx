@@ -10,6 +10,10 @@ type HoverData = {
   bar: Bar
   maValues: Array<{ label: string; value: number }>
   emaValues: Array<{ label: string; value: number }>
+  rsi?: number
+  macd?: number
+  signal?: number
+  hist?: number
 } | null
 
 const intervals = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1W']
@@ -59,8 +63,114 @@ function calcEMA(values: number[], length: number): Array<number | null> {
   return out
 }
 
+function calcRSI(values: number[], period = 14): Array<number | null> {
+  const out: Array<number | null> = values.map(() => null)
+  if (values.length <= period) return out
+  let gain = 0
+  let loss = 0
+  for (let i = 1; i <= period; i++) {
+    const diff = values[i] - values[i - 1]
+    if (diff >= 0) gain += diff
+    else loss -= diff
+  }
+  let avgGain = gain / period
+  let avgLoss = loss / period
+  out[period] = avgLoss === 0 ? 100 : 100 - (100 / (1 + avgGain / avgLoss))
+  for (let i = period + 1; i < values.length; i++) {
+    const diff = values[i] - values[i - 1]
+    const g = diff > 0 ? diff : 0
+    const l = diff < 0 ? -diff : 0
+    avgGain = (avgGain * (period - 1) + g) / period
+    avgLoss = (avgLoss * (period - 1) + l) / period
+    out[i] = avgLoss === 0 ? 100 : 100 - (100 / (1 + avgGain / avgLoss))
+  }
+  return out
+}
+
+function calcMACD(values: number[]) {
+  const ema12 = calcEMA(values, 12)
+  const ema26 = calcEMA(values, 26)
+  const macd: Array<number | null> = values.map((_, i) => (
+    typeof ema12[i] === 'number' && typeof ema26[i] === 'number' ? (ema12[i] as number) - (ema26[i] as number) : null
+  ))
+  const macdClean = macd.map(v => v ?? 0)
+  const signalBase = calcEMA(macdClean, 9)
+  const signal = macd.map((v, i) => (v === null || signalBase[i] === null ? null : signalBase[i]))
+  const hist = macd.map((v, i) => (
+    v === null || signal[i] === null ? null : v - (signal[i] as number)
+  ))
+  return { macd, signal, hist }
+}
+
 function buildPolylinePoints(series: Array<number | null>, scaleY: (v: number) => number, xForIndex: (i: number) => number): string {
   return series.map((value, i) => value === null ? null : `${xForIndex(i)},${scaleY(value)}`).filter(Boolean).join(' ')
+}
+
+function IndicatorSubcharts({
+  closes,
+  xForIndex,
+  candleGap,
+  hoverIndex,
+}: {
+  closes: number[]
+  xForIndex: (i: number) => number
+  candleGap: number
+  hoverIndex: number | null
+}) {
+  const rsi = useMemo(() => calcRSI(closes, 14), [closes])
+  const { macd, signal, hist } = useMemo(() => calcMACD(closes), [closes])
+
+  const rsiMin = 0
+  const rsiMax = 100
+  const macdVals = [...macd, ...signal, ...hist].filter((v): v is number => typeof v === 'number')
+  const macdAbs = macdVals.length ? Math.max(...macdVals.map(v => Math.abs(v))) : 1
+  const width = 1100
+
+  const scaleRsi = (v: number) => 130 - ((v - rsiMin) / (rsiMax - rsiMin)) * 110
+  const scaleMacd = (v: number) => 120 - (v / (macdAbs || 1)) * 70
+
+  return (
+    <div className="subcharts">
+      <div className="subchart-box">
+        <div className="subchart-head">RSI(14)</div>
+        <svg viewBox={`0 0 ${width} 140`} className="subchart-svg">
+          <rect x="0" y="0" width={width} height="140" fill="#0b0e11" />
+          <line x1="0" y1={scaleRsi(70)} x2={width} y2={scaleRsi(70)} stroke="#475569" strokeDasharray="4 4" />
+          <line x1="0" y1={scaleRsi(30)} x2={width} y2={scaleRsi(30)} stroke="#475569" strokeDasharray="4 4" />
+          <polyline points={buildPolylinePoints(rsi, scaleRsi, xForIndex)} fill="none" stroke="#38bdf8" strokeWidth="2" />
+          {hoverIndex !== null ? <line x1={xForIndex(hoverIndex)} y1="0" x2={xForIndex(hoverIndex)} y2="140" stroke="#94a3b8" strokeDasharray="4 4" /> : null}
+        </svg>
+      </div>
+
+      <div className="subchart-box">
+        <div className="subchart-head">MACD(12,26,9)</div>
+        <svg viewBox={`0 0 ${width} 140`} className="subchart-svg">
+          <rect x="0" y="0" width={width} height="140" fill="#0b0e11" />
+          <line x1="0" y1={scaleMacd(0)} x2={width} y2={scaleMacd(0)} stroke="#334155" />
+          {hist.map((v, i) => {
+            if (v === null) return null
+            const x = xForIndex(i) - 2
+            const y0 = scaleMacd(0)
+            const y = scaleMacd(v)
+            return (
+              <rect
+                key={i}
+                x={x}
+                y={Math.min(y, y0)}
+                width="5"
+                height={Math.max(1, Math.abs(y0 - y))}
+                fill={v >= 0 ? '#22c55e' : '#ef4444'}
+                opacity="0.9"
+              />
+            )
+          })}
+          <polyline points={buildPolylinePoints(macd, scaleMacd, xForIndex)} fill="none" stroke="#f0b90b" strokeWidth="2" />
+          <polyline points={buildPolylinePoints(signal, scaleMacd, xForIndex)} fill="none" stroke="#60a5fa" strokeWidth="2" />
+          {hoverIndex !== null ? <line x1={xForIndex(hoverIndex)} y1="0" x2={xForIndex(hoverIndex)} y2="140" stroke="#94a3b8" strokeDasharray="4 4" /> : null}
+        </svg>
+      </div>
+    </div>
+  )
 }
 
 function KlineMockChart({ state }: { state: IndicatorCenterState }) {
@@ -78,6 +188,8 @@ function KlineMockChart({ state }: { state: IndicatorCenterState }) {
   const emaSeries = state.selectedIds.includes('EMA')
     ? state.emaLines.filter((line) => line.length > 0).map((line) => ({ ...line, kind: 'EMA' as const, values: calcEMA(closes, line.length) }))
     : []
+  const rsi = useMemo(() => calcRSI(closes, 14), [closes])
+  const { macd, signal, hist } = useMemo(() => calcMACD(closes), [closes])
 
   const allSeries = [...maSeries, ...emaSeries]
   const allHighs = bars.map((b) => b.high)
@@ -93,74 +205,99 @@ function KlineMockChart({ state }: { state: IndicatorCenterState }) {
   const xForIndex = (i: number) => padLeft + i * candleGap + 3
 
   return (
-    <div className="chart-stage">
-      <svg
-        viewBox={`0 0 ${width} ${height}`}
-        className="chart-svg"
-        onMouseMove={(e) => {
-          const rect = (e.currentTarget as SVGSVGElement).getBoundingClientRect()
-          const px = ((e.clientX - rect.left) / rect.width) * width
-          const py = ((e.clientY - rect.top) / rect.height) * height
-          const idx = Math.max(0, Math.min(bars.length - 1, Math.round((px - padLeft - 3) / candleGap)))
-          const bar = bars[idx]
-          const maValues = maSeries.map((s) => ({ label: `MA(${s.length})`, value: s.values[idx] })).filter((x): x is { label: string; value: number } => typeof x.value === 'number')
-          const emaValues = emaSeries.map((s) => ({ label: `EMA(${s.length})`, value: s.values[idx] })).filter((x): x is { label: string; value: number } => typeof x.value === 'number')
-          setHover({ index: idx, x: xForIndex(idx), y: py, bar, maValues, emaValues })
-        }}
-        onMouseLeave={() => setHover(null)}
-      >
-        <rect x="0" y="0" width={width} height={height} fill="#0b0e11" />
-        {Array.from({ length: 6 }).map((_, i) => {
-          const y = 20 + i * ((height - 40) / 5)
-          return <line key={i} x1="0" y1={y} x2={width} y2={y} stroke="#1f2937" strokeWidth="1" />
-        })}
-        {allSeries.map((line) => (
-          <polyline
-            key={`${line.kind}-${line.id}`}
-            points={buildPolylinePoints(line.values, scaleY, xForIndex)}
-            fill="none"
-            stroke={line.color}
-            strokeWidth={line.width}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            opacity="0.95"
-          />
-        ))}
-        {bars.map((b, i) => {
-          const x = padLeft + i * candleGap
-          const openY = scaleY(b.open)
-          const closeY = scaleY(b.close)
-          const highY = scaleY(b.high)
-          const lowY = scaleY(b.low)
-          const up = b.close >= b.open
-          const bodyY = Math.min(openY, closeY)
-          const bodyH = Math.max(2, Math.abs(closeY - openY))
-          return (
-            <g key={i}>
-              <line x1={x + 3} y1={highY} x2={x + 3} y2={lowY} stroke={up ? '#0ECB81' : '#F6465D'} strokeWidth="1.1" />
-              <rect x={x} y={bodyY} width="6" height={bodyH} fill={up ? '#0ECB81' : '#F6465D'} rx="1" />
+    <>
+      <div className="chart-stage">
+        <svg
+          viewBox={`0 0 ${width} ${height}`}
+          className="chart-svg"
+          onMouseMove={(e) => {
+            const rect = (e.currentTarget as SVGSVGElement).getBoundingClientRect()
+            const px = ((e.clientX - rect.left) / rect.width) * width
+            const py = ((e.clientY - rect.top) / rect.height) * height
+            const idx = Math.max(0, Math.min(bars.length - 1, Math.round((px - padLeft - 3) / candleGap)))
+            const bar = bars[idx]
+            const maValues = maSeries.map((s) => ({ label: `MA(${s.length})`, value: s.values[idx] })).filter((x): x is { label: string; value: number } => typeof x.value === 'number')
+            const emaValues = emaSeries.map((s) => ({ label: `EMA(${s.length})`, value: s.values[idx] })).filter((x): x is { label: string; value: number } => typeof x.value === 'number')
+            setHover({
+              index: idx,
+              x: xForIndex(idx),
+              y: py,
+              bar,
+              maValues,
+              emaValues,
+              rsi: typeof rsi[idx] === 'number' ? rsi[idx] as number : undefined,
+              macd: typeof macd[idx] === 'number' ? macd[idx] as number : undefined,
+              signal: typeof signal[idx] === 'number' ? signal[idx] as number : undefined,
+              hist: typeof hist[idx] === 'number' ? hist[idx] as number : undefined,
+            })
+          }}
+          onMouseLeave={() => setHover(null)}
+        >
+          <rect x="0" y="0" width={width} height={height} fill="#0b0e11" />
+          {Array.from({ length: 6 }).map((_, i) => {
+            const y = 20 + i * ((height - 40) / 5)
+            return <line key={i} x1="0" y1={y} x2={width} y2={y} stroke="#1f2937" strokeWidth="1" />
+          })}
+          {allSeries.map((line) => (
+            <polyline
+              key={`${line.kind}-${line.id}`}
+              points={buildPolylinePoints(line.values, scaleY, xForIndex)}
+              fill="none"
+              stroke={line.color}
+              strokeWidth={line.width}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              opacity="0.95"
+            />
+          ))}
+          {bars.map((b, i) => {
+            const x = padLeft + i * candleGap
+            const openY = scaleY(b.open)
+            const closeY = scaleY(b.close)
+            const highY = scaleY(b.high)
+            const lowY = scaleY(b.low)
+            const up = b.close >= b.open
+            const bodyY = Math.min(openY, closeY)
+            const bodyH = Math.max(2, Math.abs(closeY - openY))
+            return (
+              <g key={i}>
+                <line x1={x + 3} y1={highY} x2={x + 3} y2={lowY} stroke={up ? '#0ECB81' : '#F6465D'} strokeWidth="1.1" />
+                <rect x={x} y={bodyY} width="6" height={bodyH} fill={up ? '#0ECB81' : '#F6465D'} rx="1" />
+              </g>
+            )
+          })}
+          {hover ? (
+            <g>
+              <line x1={hover.x} y1="0" x2={hover.x} y2={height} stroke="#94a3b8" strokeDasharray="4 4" strokeWidth="1" opacity="0.9" />
+              <line x1="0" y1={hover.y} x2={width} y2={hover.y} stroke="#94a3b8" strokeDasharray="4 4" strokeWidth="1" opacity="0.9" />
             </g>
-          )
-        })}
+          ) : null}
+        </svg>
+
         {hover ? (
-          <g>
-            <line x1={hover.x} y1="0" x2={hover.x} y2={height} stroke="#94a3b8" strokeDasharray="4 4" strokeWidth="1" opacity="0.9" />
-            <line x1="0" y1={hover.y} x2={width} y2={hover.y} stroke="#94a3b8" strokeDasharray="4 4" strokeWidth="1" opacity="0.9" />
-          </g>
+          <div className="hover-panel">
+            <div className="hover-title">K线 {hover.index + 1}</div>
+            <div className="hover-row"><span>开</span><strong>{hover.bar.open.toFixed(2)}</strong></div>
+            <div className="hover-row"><span>高</span><strong>{hover.bar.high.toFixed(2)}</strong></div>
+            <div className="hover-row"><span>低</span><strong>{hover.bar.low.toFixed(2)}</strong></div>
+            <div className="hover-row"><span>收</span><strong>{hover.bar.close.toFixed(2)}</strong></div>
+            {hover.maValues.map((item) => <div className="hover-row" key={item.label}><span>{item.label}</span><strong>{item.value.toFixed(2)}</strong></div>)}
+            {hover.emaValues.map((item) => <div className="hover-row" key={item.label}><span>{item.label}</span><strong>{item.value.toFixed(2)}</strong></div>)}
+            {typeof hover.rsi === 'number' ? <div className="hover-row"><span>RSI(14)</span><strong>{hover.rsi.toFixed(2)}</strong></div> : null}
+            {typeof hover.macd === 'number' ? <div className="hover-row"><span>MACD</span><strong>{hover.macd.toFixed(2)}</strong></div> : null}
+            {typeof hover.signal === 'number' ? <div className="hover-row"><span>Signal</span><strong>{hover.signal.toFixed(2)}</strong></div> : null}
+            {typeof hover.hist === 'number' ? <div className="hover-row"><span>Hist</span><strong>{hover.hist.toFixed(2)}</strong></div> : null}
+          </div>
         ) : null}
-      </svg>
-      {hover ? (
-        <div className="hover-panel">
-          <div className="hover-title">K线 {hover.index + 1}</div>
-          <div className="hover-row"><span>开</span><strong>{hover.bar.open.toFixed(2)}</strong></div>
-          <div className="hover-row"><span>高</span><strong>{hover.bar.high.toFixed(2)}</strong></div>
-          <div className="hover-row"><span>低</span><strong>{hover.bar.low.toFixed(2)}</strong></div>
-          <div className="hover-row"><span>收</span><strong>{hover.bar.close.toFixed(2)}</strong></div>
-          {hover.maValues.map((item) => <div className="hover-row" key={item.label}><span>{item.label}</span><strong>{item.value.toFixed(2)}</strong></div>)}
-          {hover.emaValues.map((item) => <div className="hover-row" key={item.label}><span>{item.label}</span><strong>{item.value.toFixed(2)}</strong></div>)}
-        </div>
-      ) : null}
-    </div>
+      </div>
+
+      <IndicatorSubcharts
+        closes={closes}
+        xForIndex={xForIndex}
+        candleGap={candleGap}
+        hoverIndex={hover ? hover.index : null}
+      />
+    </>
   )
 }
 
@@ -183,12 +320,12 @@ export default function TrainingPage() {
       { id: 10, length: 0, color: '#ec4899', width: 2 }
     ],
     emaLines: [
-      { id: 1, length: 7, color: '#ffffff', width: 1 },
-      { id: 2, length: 30, color: '#f0b90b', width: 2 },
-      { id: 3, length: 0, color: '#a855f7', width: 2 },
-      { id: 4, length: 0, color: '#38bdf8', width: 2 },
-      { id: 5, length: 0, color: '#22c55e', width: 2 },
-      { id: 6, length: 0, color: '#ef4444', width: 2 },
+      { id: 1, length: 0, color: '#ffffff', width: 1 },
+      { id: 2, length: 0, color: '#f0b90b', width: 2 },
+      { id: 3, length: 55, color: '#ef4444', width: 2 },
+      { id: 4, length: 144, color: '#22c55e', width: 2 },
+      { id: 5, length: 233, color: '#ffffff', width: 2 },
+      { id: 6, length: 0, color: '#38bdf8', width: 2 },
       { id: 7, length: 0, color: '#60a5fa', width: 2 },
       { id: 8, length: 0, color: '#f59e0b', width: 2 },
       { id: 9, length: 0, color: '#9333ea', width: 2 },
@@ -225,7 +362,7 @@ export default function TrainingPage() {
           <div className="chart-header stacked compact-chart-header">
             <div className="chart-header-top">
               <div className="chart-title">{symbol} 永续 · {interval}</div>
-              <div className="chart-note">时间轴已隐藏 · v1.2.16 图标+十字线版</div>
+              <div className="chart-note">时间轴已隐藏 · v1.2.17 icons + RSI + MACD</div>
             </div>
             <div className="loaded-indicators-bar compact-loaded">
               {activeMAs.map((line) => (
@@ -240,7 +377,8 @@ export default function TrainingPage() {
                   <span>EMA({line.length})</span>
                 </div>
               ))}
-              {activeMAs.length === 0 && activeEMAs.length === 0 ? <div className="empty-inline">当前未显示 MA / EMA。</div> : null}
+              <div className="indicator-chip passive compact-chip"><span className="dot" style={{ background: '#38bdf8' }} />RSI(14)</div>
+              <div className="indicator-chip passive compact-chip"><span className="dot" style={{ background: '#f0b90b' }} />MACD</div>
             </div>
           </div>
           <div className="chart-wrap compact-chart-wrap">
