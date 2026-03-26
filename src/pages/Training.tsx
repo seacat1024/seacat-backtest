@@ -120,49 +120,65 @@ function IndicatorSubcharts({
   const rsi = useMemo(() => calcRSI(closes, 14), [closes])
   const { macd, signal, hist } = useMemo(() => calcMACD(closes), [closes])
 
-  const rsiMin = 0
-  const rsiMax = 100
-  const macdVals = [...macd, ...signal, ...hist].filter((v): v is number => typeof v === 'number')
-  const macdAbs = macdVals.length ? Math.max(...macdVals.map(v => Math.abs(v))) : 1
   const width = 1100
+  const rsiTop = 18
+  const rsiBottom = 122
+  const scaleRsi = (v: number) => rsiBottom - (v / 100) * (rsiBottom - rsiTop)
 
-  const scaleRsi = (v: number) => 130 - ((v - rsiMin) / (rsiMax - rsiMin)) * 110
-  const scaleMacd = (v: number) => 120 - (v / (macdAbs || 1)) * 70
+  const macdVals = [...macd, ...signal, ...hist].filter((v): v is number => typeof v === 'number')
+  const macdAbsRaw = macdVals.length ? Math.max(...macdVals.map(v => Math.abs(v))) : 1
+  const macdAbs = Math.max(macdAbsRaw * 1.25, 0.5)
+  const macdTop = 18
+  const macdBottom = 122
+  const macdMid = 70
+  const scaleMacd = (v: number) => macdMid - (v / macdAbs) * ((macdBottom - macdTop) / 2 - 6)
+  const fmt = (n: number) => n.toFixed(2)
 
   return (
     <div className="subcharts">
       <div className="subchart-box">
-        <div className="subchart-head">RSI(14)</div>
+        <div className="subchart-head">
+          <span>RSI(14)</span>
+          {hoverIndex !== null && typeof rsi[hoverIndex] === 'number' ? <span className="subchart-value">RSI {fmt(rsi[hoverIndex] as number)}</span> : null}
+        </div>
         <svg viewBox={`0 0 ${width} 140`} className="subchart-svg">
           <rect x="0" y="0" width={width} height="140" fill="#0b0e11" />
           <line x1="0" y1={scaleRsi(70)} x2={width} y2={scaleRsi(70)} stroke="#475569" strokeDasharray="4 4" />
+          <line x1="0" y1={scaleRsi(50)} x2={width} y2={scaleRsi(50)} stroke="#334155" strokeDasharray="3 5" />
           <line x1="0" y1={scaleRsi(30)} x2={width} y2={scaleRsi(30)} stroke="#475569" strokeDasharray="4 4" />
+          <text x="6" y={scaleRsi(70)-4} fill="#94a3b8" fontSize="10">70</text>
+          <text x="6" y={scaleRsi(50)-4} fill="#64748b" fontSize="10">50</text>
+          <text x="6" y={scaleRsi(30)-4} fill="#94a3b8" fontSize="10">30</text>
           <polyline points={buildPolylinePoints(rsi, scaleRsi, xForIndex)} fill="none" stroke="#38bdf8" strokeWidth="2" />
           {hoverIndex !== null ? <line x1={xForIndex(hoverIndex)} y1="0" x2={xForIndex(hoverIndex)} y2="140" stroke="#94a3b8" strokeDasharray="4 4" /> : null}
         </svg>
       </div>
 
       <div className="subchart-box">
-        <div className="subchart-head">MACD(12,26,9)</div>
+        <div className="subchart-head">
+          <span>MACD(12,26,9)</span>
+          {hoverIndex !== null ? (
+            <span className="subchart-value">
+              {typeof macd[hoverIndex] === 'number' ? `MACD ${fmt(macd[hoverIndex] as number)}` : ''}{" "}
+              {typeof signal[hoverIndex] === 'number' ? `Signal ${fmt(signal[hoverIndex] as number)}` : ''}{" "}
+              {typeof hist[hoverIndex] === 'number' ? `Hist ${fmt(hist[hoverIndex] as number)}` : ''}
+            </span>
+          ) : null}
+        </div>
         <svg viewBox={`0 0 ${width} 140`} className="subchart-svg">
           <rect x="0" y="0" width={width} height="140" fill="#0b0e11" />
+          <line x1="0" y1={scaleMacd(macdAbs)} x2={width} y2={scaleMacd(macdAbs)} stroke="#1e293b" strokeDasharray="3 5" />
           <line x1="0" y1={scaleMacd(0)} x2={width} y2={scaleMacd(0)} stroke="#334155" />
+          <line x1="0" y1={scaleMacd(-macdAbs)} x2={width} y2={scaleMacd(-macdAbs)} stroke="#1e293b" strokeDasharray="3 5" />
+          <text x="6" y={scaleMacd(macdAbs)-4} fill="#64748b" fontSize="10">{fmt(macdAbs)}</text>
+          <text x="6" y={scaleMacd(0)-4} fill="#94a3b8" fontSize="10">0</text>
+          <text x="6" y={scaleMacd(-macdAbs)-4} fill="#64748b" fontSize="10">{fmt(-macdAbs)}</text>
           {hist.map((v, i) => {
             if (v === null) return null
             const x = xForIndex(i) - 2
             const y0 = scaleMacd(0)
             const y = scaleMacd(v)
-            return (
-              <rect
-                key={i}
-                x={x}
-                y={Math.min(y, y0)}
-                width="5"
-                height={Math.max(1, Math.abs(y0 - y))}
-                fill={v >= 0 ? '#22c55e' : '#ef4444'}
-                opacity="0.9"
-              />
-            )
+            return <rect key={i} x={x} y={Math.min(y, y0)} width="5" height={Math.max(1, Math.abs(y0 - y))} fill={v >= 0 ? '#22c55e' : '#ef4444'} opacity="0.9" />
           })}
           <polyline points={buildPolylinePoints(macd, scaleMacd, xForIndex)} fill="none" stroke="#f0b90b" strokeWidth="2" />
           <polyline points={buildPolylinePoints(signal, scaleMacd, xForIndex)} fill="none" stroke="#60a5fa" strokeWidth="2" />
@@ -362,7 +378,7 @@ export default function TrainingPage() {
           <div className="chart-header stacked compact-chart-header">
             <div className="chart-header-top">
               <div className="chart-title">{symbol} 永续 · {interval}</div>
-              <div className="chart-note">时间轴已隐藏 · v1.2.17 icons + RSI + MACD</div>
+              <div className="chart-note">时间轴已隐藏 · v1.2.18 scales + MACD padding</div>
             </div>
             <div className="loaded-indicators-bar compact-loaded">
               {activeMAs.map((line) => (

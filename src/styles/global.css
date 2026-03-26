@@ -52,7 +52,8 @@ button, input, select { font: inherit; }
 
 .subcharts { display: grid; grid-template-columns: 1fr; gap: 6px; margin-top: 6px; }
 .subchart-box { border: 1px solid #1f2937; border-radius: 10px; overflow: hidden; background: #0f1724; }
-.subchart-head { padding: 6px 10px; font-size: 11px; color: #cbd5e1; border-bottom: 1px solid #1f2937; }
+.subchart-head { padding: 6px 10px; font-size: 11px; color: #cbd5e1; border-bottom: 1px solid #1f2937; display:flex; align-items:center; justify-content:space-between; gap:10px; }
+.subchart-value { color:#94a3b8; font-size:10px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .subchart-svg { width: 100%; height: 140px; display: block; }
 
 /* Modal */
