@@ -1,22 +1,8 @@
-
 import { useEffect, useMemo, useState } from 'react'
 import IndicatorCenterModal from '../components/indicators/IndicatorCenterModal'
 import type { IndicatorCenterState } from '../components/indicators/types'
 
 type Bar = { open: number; high: number; low: number; close: number }
-type PositionSide = 'long' | 'short'
-type PositionState = { side: PositionSide; qty: number; entry: number; entryBarIndex: number }
-
-type TradeRecord = {
-  id: number
-  kind: 'open' | 'close'
-  side: PositionSide
-  price: number
-  qty: number
-  pnl?: number
-  barIndex: number
-}
-
 type HoverData = {
   index: number
   x: number
@@ -24,9 +10,38 @@ type HoverData = {
   bar: Bar
   maValues: Array<{ label: string; value: number }>
   emaValues: Array<{ label: string; value: number }>
+  rsi?: number
+  macd?: number
+  signal?: number
+  hist?: number
 } | null
 
-type KlineCachePayload = { symbol: string; interval: string; savedAt: number; bars: Bar[] }
+type KlineCachePayload = {
+  symbol: string
+  interval: string
+  savedAt: number
+  bars: Bar[]
+}
+
+type PositionSide = 'long' | 'short'
+type PositionState = {
+  side: PositionSide
+  qty: number
+  entry: number
+  entryBarIndex: number
+}
+
+type TradeRecord = {
+  id: string
+  side: PositionSide
+  qty: number
+  entryPrice: number
+  entryBarIndex: number
+  exitPrice?: number
+  exitBarIndex?: number
+  pnl?: number
+  status: 'open' | 'closed'
+}
 
 const intervals = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1W']
 const symbols = ['BTCUSDT', 'ETHUSDT']
@@ -313,13 +328,13 @@ function KlineChart({
   state,
   loading,
   tradeRecords,
-  windowStart,
+  currentPrice,
 }: {
   bars: Bar[]
   state: IndicatorCenterState
   loading: boolean
   tradeRecords: TradeRecord[]
-  windowStart: number
+  currentPrice: number
 }) {
   const [hover, setHover] = useState<HoverData>(null)
   const width = 1100
@@ -335,10 +350,24 @@ function KlineChart({
     ? state.emaLines.filter((line) => line.length > 0).map((line) => ({ ...line, kind: 'EMA' as const, values: calcEMA(closes, line.length) }))
     : []
 
+  const rsi = useMemo(() => calcRSI(closes, state.rsiPeriod), [closes, state.rsiPeriod])
+  const { macd, signal, hist } = useMemo(() => calcMACD(closes, state.macdConfig.fast, state.macdConfig.slow, state.macdConfig.signal), [closes, state.macdConfig])
+
   const allSeries = [...maSeries, ...emaSeries]
   const allHighs = bars.map((b) => b.high)
   const allLows = bars.map((b) => b.low)
   allSeries.forEach((series) => series.values.forEach((v) => { if (typeof v === 'number') { allHighs.push(v); allLows.push(v) } }))
+  tradeRecords.forEach((t) => {
+    allHighs.push(t.entryPrice)
+    allLows.push(t.entryPrice)
+    if (typeof t.exitPrice === 'number') {
+      allHighs.push(t.exitPrice)
+      allLows.push(t.exitPrice)
+    } else if (t.status === 'open' && currentPrice) {
+      allHighs.push(currentPrice)
+      allLows.push(currentPrice)
+    }
+  })
 
   const max = allHighs.length ? Math.max(...allHighs) : 1
   const min = allLows.length ? Math.min(...allLows) : 0
@@ -347,10 +376,6 @@ function KlineChart({
     return height - 20 - pct * (height - 40)
   }
   const xForIndex = (i: number) => padLeft + i * candleGap + 3
-
-  const localMarks = tradeRecords
-    .filter((t) => t.barIndex >= windowStart && t.barIndex < windowStart + bars.length)
-    .map((t) => ({ ...t, localIndex: t.barIndex - windowStart }))
 
   return (
     <>
@@ -368,7 +393,18 @@ function KlineChart({
             const bar = bars[idx]
             const maValues = maSeries.map((s) => ({ label: `MA(${s.length})`, value: s.values[idx] })).filter((x): x is { label: string; value: number } => typeof x.value === 'number')
             const emaValues = emaSeries.map((s) => ({ label: `EMA(${s.length})`, value: s.values[idx] })).filter((x): x is { label: string; value: number } => typeof x.value === 'number')
-            setHover({ index: idx, x: xForIndex(idx), y: py, bar, maValues, emaValues })
+            setHover({
+              index: idx,
+              x: xForIndex(idx),
+              y: py,
+              bar,
+              maValues,
+              emaValues,
+              rsi: typeof rsi[idx] === 'number' ? rsi[idx] as number : undefined,
+              macd: typeof macd[idx] === 'number' ? macd[idx] as number : undefined,
+              signal: typeof signal[idx] === 'number' ? signal[idx] as number : undefined,
+              hist: typeof hist[idx] === 'number' ? hist[idx] as number : undefined,
+            })
           }}
           onMouseLeave={() => setHover(null)}
         >
@@ -377,6 +413,25 @@ function KlineChart({
             const y = 20 + i * ((height - 40) / 5)
             return <line key={i} x1="0" y1={y} x2={width} y2={y} stroke="#1f2937" strokeWidth="1" />
           })}
+
+          {tradeRecords.map((record) => {
+            if (record.entryBarIndex < 0 || record.entryBarIndex >= bars.length) return null
+            const entryX = xForIndex(record.entryBarIndex)
+            const entryY = scaleY(record.entryPrice)
+            const isClosed = record.status === 'closed' && typeof record.exitBarIndex === 'number' && typeof record.exitPrice === 'number'
+            const exitX = isClosed ? xForIndex(record.exitBarIndex!) : xForIndex(bars.length - 1)
+            const exitY = isClosed ? scaleY(record.exitPrice!) : scaleY(currentPrice || record.entryPrice)
+            const lineColor = isClosed ? ((record.pnl ?? 0) >= 0 ? '#22c55e' : '#ef4444') : '#60a5fa'
+            const dash = isClosed ? undefined : '5 4'
+            return (
+              <g key={`link-${record.id}`}>
+                <line x1={entryX} y1={entryY} x2={exitX} y2={exitY} stroke={lineColor} strokeWidth="2" strokeDasharray={dash} opacity="0.95" />
+                <circle cx={entryX} cy={entryY} r="4" fill={lineColor} />
+                <circle cx={exitX} cy={exitY} r="4" fill={lineColor} />
+              </g>
+            )
+          })}
+
           {allSeries.map((line) => (
             <polyline
               key={`${line.kind}-${line.id}`}
@@ -389,6 +444,7 @@ function KlineChart({
               opacity="0.95"
             />
           ))}
+
           {bars.map((b, i) => {
             const x = padLeft + i * candleGap
             const openY = scaleY(b.open)
@@ -405,28 +461,34 @@ function KlineChart({
               </g>
             )
           })}
-          {localMarks.map((mark) => {
-            const x = xForIndex(mark.localIndex)
-            const y = scaleY(mark.price)
-            const isOpen = mark.kind === 'open'
-            const isLong = mark.side === 'long'
-            const color = isOpen ? (isLong ? '#22c55e' : '#ef4444') : '#f0b90b'
-            const lineY2 = isOpen ? (isLong ? y + 18 : y - 18) : y - 16
-            const triangle = isOpen
-              ? isLong
-              ? `${x},${y-10} ${x-6},${y} ${x+6},${y}`
-              : `${x},${y+10} ${x-6},${y} ${x+6},${y}`
-              : `${x},${y-8} ${x-6},${y-2} ${x+6},${y-2}`
+
+          {tradeRecords.map((record) => {
+            if (record.entryBarIndex < 0 || record.entryBarIndex >= bars.length) return null
+            const entryX = xForIndex(record.entryBarIndex)
+            const entryY = scaleY(record.entryPrice)
+            const openTextY = record.side === 'long' ? entryY - 22 : entryY + 26
+            const openTriangle = record.side === 'long'
+              ? `${entryX},${entryY-16} ${entryX-8},${entryY} ${entryX+8},${entryY}`
+              : `${entryX},${entryY+16} ${entryX-8},${entryY} ${entryX+8},${entryY}`
+            const exitX = record.status === 'closed' && typeof record.exitBarIndex === 'number' ? xForIndex(record.exitBarIndex) : null
+            const exitY = record.status === 'closed' && typeof record.exitPrice === 'number' ? scaleY(record.exitPrice) : null
+            const exitTextY = exitY !== null ? exitY - 18 : null
             return (
-              <g key={mark.id}>
-                <line x1={x} y1={y} x2={x} y2={lineY2} stroke={color} strokeWidth="1.6" />
-                <polygon points={triangle} fill={color} />
-                <text x={x + 8} y={isOpen ? (isLong ? y - 10 : y + 18) : y - 10} fill={color} fontSize="10">
-                  {isOpen ? (isLong ? '开多' : '开空') : '平仓'}
+              <g key={`marks-${record.id}`}>
+                <polygon points={openTriangle} fill={record.side === 'long' ? '#4ade80' : '#f87171'} opacity="0.95" />
+                <text x={entryX + 10} y={openTextY} fill={record.side === 'long' ? '#4ade80' : '#f87171'} fontSize="12" fontWeight="700">
+                  {record.side === 'long' ? '开多' : '开空'}
                 </text>
+                {exitX !== null && exitY !== null && exitTextY !== null ? (
+                  <>
+                    <polygon points={`${exitX},${exitY-16} ${exitX-8},${exitY} ${exitX+8},${exitY}`} fill="#f0b90b" opacity="0.95" />
+                    <text x={exitX + 10} y={exitTextY} fill="#f0b90b" fontSize="12" fontWeight="700">平仓</text>
+                  </>
+                ) : null}
               </g>
             )
           })}
+
           {hover ? (
             <g>
               <line x1={hover.x} y1="0" x2={hover.x} y2={height} stroke="#94a3b8" strokeDasharray="4 4" strokeWidth="1" opacity="0.9" />
@@ -437,16 +499,30 @@ function KlineChart({
 
         {hover ? (
           <div className="hover-panel">
-            <div className="hover-title">K线 {windowStart + hover.index + 1}</div>
+            <div className="hover-title">K线 {hover.index + 1}</div>
             <div className="hover-row"><span>开</span><strong>{hover.bar.open.toFixed(2)}</strong></div>
             <div className="hover-row"><span>高</span><strong>{hover.bar.high.toFixed(2)}</strong></div>
             <div className="hover-row"><span>低</span><strong>{hover.bar.low.toFixed(2)}</strong></div>
             <div className="hover-row"><span>收</span><strong>{hover.bar.close.toFixed(2)}</strong></div>
             {hover.maValues.map((item) => <div className="hover-row" key={item.label}><span>{item.label}</span><strong>{item.value.toFixed(2)}</strong></div>)}
             {hover.emaValues.map((item) => <div className="hover-row" key={item.label}><span>{item.label}</span><strong>{item.value.toFixed(2)}</strong></div>)}
+            {typeof hover.rsi === 'number' ? <div className="hover-row"><span>RSI({state.rsiPeriod})</span><strong>{hover.rsi.toFixed(2)}</strong></div> : null}
+            {typeof hover.macd === 'number' ? <div className="hover-row"><span>MACD</span><strong>{hover.macd.toFixed(2)}</strong></div> : null}
+            {typeof hover.signal === 'number' ? <div className="hover-row"><span>Signal</span><strong>{hover.signal.toFixed(2)}</strong></div> : null}
+            {typeof hover.hist === 'number' ? <div className="hover-row"><span>Hist</span><strong>{hover.hist.toFixed(2)}</strong></div> : null}
           </div>
         ) : null}
       </div>
+
+      <IndicatorSubcharts
+        closes={closes}
+        xForIndex={xForIndex}
+        hoverIndex={hover ? hover.index : null}
+        rsiPeriod={state.rsiPeriod}
+        macdConfig={state.macdConfig}
+        showRsi={state.selectedIds.includes('RSI')}
+        showMacd={state.selectedIds.includes('MACD')}
+      />
     </>
   )
 }
@@ -475,7 +551,7 @@ export default function TrainingPage() {
   useEffect(() => {
     const loaded = sanitizeState(profiles[symbol])
     setCenterState(loaded)
-  }, [symbol])
+  }, [symbol, profiles])
 
   useEffect(() => {
     setProfiles((prev) => {
@@ -530,17 +606,16 @@ export default function TrainingPage() {
     const maxStart = Math.max(minStart, bars.length - 80)
     const next = Math.max(minStart, Math.floor(Math.random() * (maxStart - minStart + 1)) + minStart)
     setVisibleCount(next)
-    setPosition(null)
-    setTradeRecords([])
-    setBalance(initialBalance)
-    setRealizedPnl(0)
   }, [bars])
 
   useEffect(() => {
     if (!replayMode || !isPlaying) return
     const timer = window.setInterval(() => {
       setVisibleCount((prev) => {
-        if (prev >= bars.length) return prev
+        if (prev >= bars.length) {
+          window.clearInterval(timer)
+          return prev
+        }
         return Math.min(bars.length, prev + 1)
       })
     }, Math.max(80, 700 / replaySpeed))
@@ -551,16 +626,27 @@ export default function TrainingPage() {
     if (visibleCount >= bars.length && isPlaying) setIsPlaying(false)
   }, [visibleCount, bars.length, isPlaying])
 
-  const replayEnd = replayMode ? Math.max(1, Math.min(visibleCount, bars.length)) : bars.length
-  const replayStart = replayMode ? Math.max(0, replayEnd - DISPLAY_WINDOW) : 0
-
   const replayBars = useMemo(() => {
     if (!replayMode) return bars
-    return bars.slice(replayStart, replayEnd)
-  }, [bars, replayMode, replayStart, replayEnd])
+    const end = Math.max(1, Math.min(visibleCount, bars.length))
+    const start = Math.max(0, end - DISPLAY_WINDOW)
+    return bars.slice(start, end)
+  }, [bars, replayMode, visibleCount])
 
   const currentPrice = replayBars.length ? replayBars[replayBars.length - 1].close : 0
-  const currentBarIndex = replayMode ? Math.max(0, replayEnd - 1) : Math.max(0, bars.length - 1)
+  const visibleStart = replayMode ? Math.max(0, Math.max(1, Math.min(visibleCount, bars.length)) - DISPLAY_WINDOW) : 0
+  const visibleTradeRecords = tradeRecords
+    .filter((record) => {
+      const entryVisible = record.entryBarIndex >= visibleStart && record.entryBarIndex < visibleStart + replayBars.length
+      const exitVisible = typeof record.exitBarIndex === 'number' && record.exitBarIndex >= visibleStart && record.exitBarIndex < visibleStart + replayBars.length
+      return entryVisible || exitVisible || record.status === 'open'
+    })
+    .map((record) => ({
+      ...record,
+      entryBarIndex: record.entryBarIndex - visibleStart,
+      exitBarIndex: typeof record.exitBarIndex === 'number' ? record.exitBarIndex - visibleStart : undefined,
+    }))
+
   const floatingPnl = position
     ? position.side === 'long'
       ? (currentPrice - position.entry) * position.qty
@@ -578,10 +664,6 @@ export default function TrainingPage() {
     const next = Math.max(minStart, Math.floor(Math.random() * (maxStart - minStart + 1)) + minStart)
     setVisibleCount(next)
     setIsPlaying(false)
-    setPosition(null)
-    setTradeRecords([])
-    setBalance(initialBalance)
-    setRealizedPnl(0)
   }
 
   const resetAccount = () => {
@@ -593,29 +675,46 @@ export default function TrainingPage() {
 
   const openPosition = (side: PositionSide) => {
     if (!currentPrice || orderQty <= 0 || position) return
-    const nextPosition = { side, qty: orderQty, entry: currentPrice, entryBarIndex: currentBarIndex }
-    setPosition(nextPosition)
-    setTradeRecords((prev) => [
-      ...prev,
-      { id: Date.now(), kind: 'open', side, qty: orderQty, price: currentPrice, barIndex: currentBarIndex },
-    ])
+    const globalIndex = replayMode ? Math.max(0, Math.min(visibleCount, bars.length) - 1) : Math.max(0, bars.length - 1)
+    const record: TradeRecord = {
+      id: `${Date.now()}-${side}`,
+      side,
+      qty: orderQty,
+      entryPrice: currentPrice,
+      entryBarIndex: globalIndex,
+      status: 'open',
+    }
+    setPosition({ side, qty: orderQty, entry: currentPrice, entryBarIndex: globalIndex })
+    setTradeRecords((prev) => [...prev, record])
   }
 
   const closePosition = () => {
     if (!position || !currentPrice) return
+    const exitIndex = replayMode ? Math.max(0, Math.min(visibleCount, bars.length) - 1) : Math.max(0, bars.length - 1)
     const pnl = position.side === 'long'
       ? (currentPrice - position.entry) * position.qty
       : (position.entry - currentPrice) * position.qty
+
     setBalance((prev) => prev + pnl)
     setRealizedPnl((prev) => prev + pnl)
-    setTradeRecords((prev) => [
-      ...prev,
-      { id: Date.now(), kind: 'close', side: position.side, qty: position.qty, price: currentPrice, pnl, barIndex: currentBarIndex },
-    ])
+    setTradeRecords((prev) => {
+      const next = [...prev]
+      for (let i = next.length - 1; i >= 0; i--) {
+        if (next[i].status === 'open') {
+          next[i] = {
+            ...next[i],
+            exitPrice: currentPrice,
+            exitBarIndex: exitIndex,
+            pnl,
+            status: 'closed',
+          }
+          break
+        }
+      }
+      return next
+    })
     setPosition(null)
   }
-
-  const recentTrades = [...tradeRecords].slice(-8).reverse()
 
   return (
     <div className="app-shell">
@@ -647,7 +746,7 @@ export default function TrainingPage() {
           <div className="chart-header stacked compact-chart-header">
             <div className="chart-header-top">
               <div className="chart-title">{symbol} 永续 · {interval}</div>
-              <div className="chart-note">时间轴已隐藏 · v1.2.27 交易标记与记录版</div>
+              <div className="chart-note">时间轴已隐藏 · v1.2.28 开平仓连线版</div>
             </div>
 
             <div className="replay-toolbar">
@@ -710,40 +809,27 @@ export default function TrainingPage() {
               <div className="persist-chip">指标已保存：{symbol}</div>
               <div className={`cache-chip ${cacheStatus}`}>{cacheStatus === 'fresh' ? 'K线缓存命中' : cacheStatus === 'stale' ? 'K线旧缓存' : cacheStatus === 'remote' ? 'K线远端已刷新' : '无缓存'}</div>
             </div>
-
-            <div className="records-panel">
-              <div className="records-title">交易记录</div>
-              {recentTrades.length ? (
-                <div className="records-table">
-                  {recentTrades.map((trade) => (
-                    <div key={trade.id} className="record-row">
-                      <span>{trade.kind === 'open' ? (trade.side === 'long' ? '开多' : '开空') : '平仓'}</span>
-                      <span>{trade.price.toFixed(2)}</span>
-                      <span>{trade.qty}</span>
-                      <span>{typeof trade.pnl === 'number' ? trade.pnl.toFixed(2) : '-'}</span>
-                      <span>#{trade.barIndex + 1}</span>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="records-empty">还没有交易记录</div>
-              )}
-            </div>
-
             {dataError ? <div className="error-banner">{dataError}</div> : null}
           </div>
 
           <div className="chart-wrap compact-chart-wrap">
-            <KlineChart bars={replayBars} state={centerState} loading={loading} tradeRecords={tradeRecords} windowStart={replayStart} />
-            <IndicatorSubcharts
-              closes={replayBars.map((b) => b.close)}
-              xForIndex={(i: number) => 20 + i * Math.max(5.8, Math.min(10.5, (1100 - 40) / Math.max(1, replayBars.length))) + 3}
-              hoverIndex={null}
-              rsiPeriod={centerState.rsiPeriod}
-              macdConfig={centerState.macdConfig}
-              showRsi={centerState.selectedIds.includes('RSI')}
-              showMacd={centerState.selectedIds.includes('MACD')}
-            />
+            <KlineChart bars={replayBars} state={centerState} loading={loading} tradeRecords={visibleTradeRecords} currentPrice={currentPrice} />
+          </div>
+
+          <div className="records-panel">
+            <div className="records-title">交易记录</div>
+            <div className="records-list">
+              {tradeRecords.length === 0 ? <div className="record-empty">暂无交易记录</div> : tradeRecords.slice().reverse().map((record) => (
+                <div key={record.id} className="record-row">
+                  <span>{record.side === 'long' ? '多' : '空'}</span>
+                  <span>开 {record.entryPrice.toFixed(2)}</span>
+                  <span>量 {record.qty}</span>
+                  <span>第 {record.entryBarIndex + 1} 根</span>
+                  <span>{record.status === 'closed' && typeof record.exitPrice === 'number' ? `平 ${record.exitPrice.toFixed(2)}` : '持仓中'}</span>
+                  <span>{record.status === 'closed' ? `盈亏 ${(record.pnl ?? 0).toFixed(2)}` : '--'}</span>
+                </div>
+              ))}
+            </div>
           </div>
         </main>
       </div>
