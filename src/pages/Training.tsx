@@ -96,6 +96,20 @@ function generateMockBars(count = 120): Bar[] {
   return out
 }
 
+async function fetchFuturesKlines(symbol: string, interval: string, limit = 500): Promise<Bar[]> {
+  const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`
+  const res = await fetch(url)
+  if (!res.ok) throw new Error(`Binance API ${res.status}`)
+  const raw = await res.json()
+  if (!Array.isArray(raw)) throw new Error('Unexpected Binance response')
+  return raw.map((item: any) => ({
+    open: Number(item[1]),
+    high: Number(item[2]),
+    low: Number(item[3]),
+    close: Number(item[4]),
+  }))
+}
+
 function calcMA(values: number[], length: number): Array<number | null> {
   return values.map((_, i) => {
     if (length <= 0 || i + 1 < length) return null
@@ -158,9 +172,7 @@ function calcMACD(values: number[], fast = 12, slow = 26, signalPeriod = 9) {
   const macdClean = macd.map(v => v ?? 0)
   const signalBase = calcEMA(macdClean, signalPeriod)
   const signal = macd.map((v, i) => (v === null || signalBase[i] === null ? null : signalBase[i]))
-  const hist = macd.map((v, i) => (
-    v === null || signal[i] === null ? null : v - (signal[i] as number)
-  ))
+  const hist = macd.map((v, i) => (v === null || signal[i] === null ? null : v - (signal[i] as number)))
   return { macd, signal, hist }
 }
 
@@ -228,8 +240,8 @@ function IndicatorSubcharts({
             <span>MACD({macdConfig.fast},{macdConfig.slow},{macdConfig.signal})</span>
             {hoverIndex !== null ? (
               <span className="subchart-value">
-                {typeof macd[hoverIndex] === 'number' ? `MACD ${fmt(macd[hoverIndex] as number)}` : ''}{" "}
-                {typeof signal[hoverIndex] === 'number' ? `Signal ${fmt(signal[hoverIndex] as number)}` : ''}{" "}
+                {typeof macd[hoverIndex] === 'number' ? `MACD ${fmt(macd[hoverIndex] as number)}` : ''}{' '}
+                {typeof signal[hoverIndex] === 'number' ? `Signal ${fmt(signal[hoverIndex] as number)}` : ''}{' '}
                 {typeof hist[hoverIndex] === 'number' ? `Hist ${fmt(hist[hoverIndex] as number)}` : ''}
               </span>
             ) : null}
@@ -259,8 +271,7 @@ function IndicatorSubcharts({
   )
 }
 
-function KlineMockChart({ state }: { state: IndicatorCenterState }) {
-  const bars = useMemo(() => generateMockBars(100), [])
+function KlineChart({ bars, state, loading }: { bars: Bar[]; state: IndicatorCenterState; loading: boolean }) {
   const [hover, setHover] = useState<HoverData>(null)
   const width = 1100
   const height = 420
@@ -276,18 +287,15 @@ function KlineMockChart({ state }: { state: IndicatorCenterState }) {
     : []
 
   const rsi = useMemo(() => calcRSI(closes, state.rsiPeriod), [closes, state.rsiPeriod])
-  const { macd, signal, hist } = useMemo(
-    () => calcMACD(closes, state.macdConfig.fast, state.macdConfig.slow, state.macdConfig.signal),
-    [closes, state.macdConfig]
-  )
+  const { macd, signal, hist } = useMemo(() => calcMACD(closes, state.macdConfig.fast, state.macdConfig.slow, state.macdConfig.signal), [closes, state.macdConfig])
 
   const allSeries = [...maSeries, ...emaSeries]
   const allHighs = bars.map((b) => b.high)
   const allLows = bars.map((b) => b.low)
   allSeries.forEach((series) => series.values.forEach((v) => { if (typeof v === 'number') { allHighs.push(v); allLows.push(v) } }))
 
-  const max = Math.max(...allHighs)
-  const min = Math.min(...allLows)
+  const max = allHighs.length ? Math.max(...allHighs) : 1
+  const min = allLows.length ? Math.min(...allLows) : 0
   const scaleY = (v: number) => {
     const pct = (v - min) / (max - min || 1)
     return height - 20 - pct * (height - 40)
@@ -297,10 +305,12 @@ function KlineMockChart({ state }: { state: IndicatorCenterState }) {
   return (
     <>
       <div className="chart-stage">
+        {loading ? <div className="loading-overlay">加载 Binance 合约 K 线中…</div> : null}
         <svg
           viewBox={`0 0 ${width} ${height}`}
           className="chart-svg"
           onMouseMove={(e) => {
+            if (!bars.length) return
             const rect = (e.currentTarget as SVGSVGElement).getBoundingClientRect()
             const px = ((e.clientX - rect.left) / rect.width) * width
             const py = ((e.clientY - rect.top) / rect.height) * height
@@ -400,6 +410,9 @@ export default function TrainingPage() {
   const [open, setOpen] = useState(false)
   const [profiles, setProfiles] = useState<Record<string, IndicatorCenterState>>(() => loadProfiles())
   const [centerState, setCenterState] = useState<IndicatorCenterState>(() => sanitizeState(loadProfiles()['BTCUSDT']))
+  const [bars, setBars] = useState<Bar[]>([])
+  const [loading, setLoading] = useState(true)
+  const [dataError, setDataError] = useState('')
 
   useEffect(() => {
     const loaded = sanitizeState(profiles[symbol])
@@ -413,6 +426,25 @@ export default function TrainingPage() {
       return next
     })
   }, [symbol, centerState])
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    setDataError('')
+    fetchFuturesKlines(symbol, interval, 500)
+      .then((nextBars) => {
+        if (cancelled) return
+        setBars(nextBars)
+        setLoading(false)
+      })
+      .catch((err) => {
+        if (cancelled) return
+        setBars(generateMockBars(120))
+        setDataError(`Binance 数据加载失败，当前显示本地回退数据：${err instanceof Error ? err.message : 'unknown error'}`)
+        setLoading(false)
+      })
+    return () => { cancelled = true }
+  }, [symbol, interval])
 
   const activeMAs = centerState.selectedIds.includes('MA') ? centerState.maLines.filter((line) => line.length > 0) : []
   const activeEMAs = centerState.selectedIds.includes('EMA') ? centerState.emaLines.filter((line) => line.length > 0) : []
@@ -432,10 +464,7 @@ export default function TrainingPage() {
           ))}
         </div>
         <div className="toolbar-actions">
-          <button className="btn secondary compact-btn" onClick={() => {
-            const defaults = defaultIndicatorState()
-            setCenterState(defaults)
-          }} title="恢复当前交易对默认指标">重置</button>
+          <button className="btn secondary compact-btn" onClick={() => setCenterState(defaultIndicatorState())} title="恢复当前交易对默认指标">重置</button>
           <button className="btn primary only-icon compact-icon-btn" onClick={() => setOpen(true)} title="指标中心">
             <span className="toolbar-icon">ƒx</span>
           </button>
@@ -447,7 +476,7 @@ export default function TrainingPage() {
           <div className="chart-header stacked compact-chart-header">
             <div className="chart-header-top">
               <div className="chart-title">{symbol} 永续 · {interval}</div>
-              <div className="chart-note">时间轴已隐藏 · v1.2.20 localStorage per symbol</div>
+              <div className="chart-note">时间轴已隐藏 · v1.2.21 Binance futures klines</div>
             </div>
             <div className="loaded-indicators-bar compact-loaded">
               {activeMAs.map((line) => (
@@ -466,9 +495,10 @@ export default function TrainingPage() {
               {centerState.selectedIds.includes('MACD') ? <div className="indicator-chip passive compact-chip"><span className="dot" style={{ background: '#f0b90b' }} />MACD({centerState.macdConfig.fast},{centerState.macdConfig.slow},{centerState.macdConfig.signal})</div> : null}
               <div className="persist-chip">已保存到本地：{symbol}</div>
             </div>
+            {dataError ? <div className="error-banner">{dataError}</div> : null}
           </div>
           <div className="chart-wrap compact-chart-wrap">
-            <KlineMockChart state={centerState} />
+            <KlineChart bars={bars} state={centerState} loading={loading} />
           </div>
         </main>
       </div>
