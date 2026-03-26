@@ -414,9 +414,9 @@ function KlineChart({
             const lineY2 = isOpen ? (isLong ? y + 18 : y - 18) : y - 16
             const triangle = isOpen
               ? isLong
-                ? f"{x},{y-10} {x-6},{y} {x+6},{y}"
-                : f"{x},{y+10} {x-6},{y} {x+6},{y}"
-              : f"{x},{y-8} {x-6},{y-2} {x+6},{y-2}"
+              ? `${x},${y-10} ${x-6},${y} ${x+6},${y}`
+              : `${x},${y+10} ${x-6},${y} ${x+6},${y}`
+              : `${x},${y-8} ${x-6},${y-2} ${x+6},${y-2}`
             return (
               <g key={mark.id}>
                 <line x1={x} y1={y} x2={x} y2={lineY2} stroke={color} strokeWidth="1.6" />
