@@ -16,9 +16,19 @@ type HoverData = {
   hist?: number
 } | null
 
+type KlineCachePayload = {
+  symbol: string
+  interval: string
+  savedAt: number
+  bars: Bar[]
+}
+
 const intervals = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1W']
 const symbols = ['BTCUSDT', 'ETHUSDT']
+const replaySpeeds = [1, 2, 4, 8]
 const STORAGE_KEY = 'seacat-backtest-indicator-profiles-v1'
+const KLINE_CACHE_PREFIX = 'seacat-backtest-kline-cache-v1'
+const KLINE_CACHE_TTL_MS = 1000 * 60 * 15
 
 const defaultIndicatorState = (): IndicatorCenterState => ({
   selectedIds: ['MA', 'EMA', 'RSI', 'MACD'],
@@ -63,6 +73,32 @@ function loadProfiles(): Record<string, IndicatorCenterState> {
 
 function saveProfiles(profiles: Record<string, IndicatorCenterState>) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(profiles))
+}
+
+function getKlineCacheKey(symbol: string, interval: string) {
+  return `${KLINE_CACHE_PREFIX}:${symbol}:${interval}`
+}
+
+function loadKlineCache(symbol: string, interval: string): KlineCachePayload | null {
+  try {
+    const raw = localStorage.getItem(getKlineCacheKey(symbol, interval))
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as KlineCachePayload
+    if (!parsed || !Array.isArray(parsed.bars)) return null
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+function saveKlineCache(symbol: string, interval: string, bars: Bar[]) {
+  const payload: KlineCachePayload = {
+    symbol,
+    interval,
+    savedAt: Date.now(),
+    bars,
+  }
+  localStorage.setItem(getKlineCacheKey(symbol, interval), JSON.stringify(payload))
 }
 
 function sanitizeState(input: Partial<IndicatorCenterState> | undefined): IndicatorCenterState {
@@ -413,6 +449,11 @@ export default function TrainingPage() {
   const [bars, setBars] = useState<Bar[]>([])
   const [loading, setLoading] = useState(true)
   const [dataError, setDataError] = useState('')
+  const [cacheStatus, setCacheStatus] = useState<'none' | 'fresh' | 'stale' | 'remote'>('none')
+  const [replayMode, setReplayMode] = useState(true)
+  const [isPlaying, setIsPlaying] = useState(false)
+  const [replaySpeed, setReplaySpeed] = useState(2)
+  const [visibleCount, setVisibleCount] = useState(120)
 
   useEffect(() => {
     const loaded = sanitizeState(profiles[symbol])
@@ -429,25 +470,87 @@ export default function TrainingPage() {
 
   useEffect(() => {
     let cancelled = false
-    setLoading(true)
+    const cached = loadKlineCache(symbol, interval)
+    const cacheAge = cached ? Date.now() - cached.savedAt : Number.MAX_SAFE_INTEGER
+    const hasFreshCache = !!cached && cacheAge < KLINE_CACHE_TTL_MS
+
+    if (cached?.bars?.length) {
+      setBars(cached.bars)
+      setCacheStatus(hasFreshCache ? 'fresh' : 'stale')
+      setLoading(false)
+    } else {
+      setLoading(true)
+      setCacheStatus('none')
+    }
+
     setDataError('')
+    setIsPlaying(false)
+
     fetchFuturesKlines(symbol, interval, 500)
       .then((nextBars) => {
         if (cancelled) return
         setBars(nextBars)
+        saveKlineCache(symbol, interval, nextBars)
+        setCacheStatus('remote')
         setLoading(false)
       })
       .catch((err) => {
         if (cancelled) return
-        setBars(generateMockBars(120))
-        setDataError(`Binance 数据加载失败，当前显示本地回退数据：${err instanceof Error ? err.message : 'unknown error'}`)
+        if (!cached?.bars?.length) {
+          setBars(generateMockBars(120))
+          setCacheStatus('none')
+        }
+        setDataError(`Binance 数据加载失败，${cached?.bars?.length ? '当前显示本地缓存数据' : '当前显示本地回退数据'}：${err instanceof Error ? err.message : 'unknown error'}`)
         setLoading(false)
       })
+
     return () => { cancelled = true }
   }, [symbol, interval])
 
+  useEffect(() => {
+    if (!bars.length) return
+    const minStart = Math.min(120, bars.length)
+    const maxStart = Math.max(minStart, bars.length - 80)
+    const next = Math.max(minStart, Math.floor(Math.random() * (maxStart - minStart + 1)) + minStart)
+    setVisibleCount(next)
+  }, [bars])
+
+  useEffect(() => {
+    if (!replayMode || !isPlaying) return
+    const timer = window.setInterval(() => {
+      setVisibleCount((prev) => {
+        if (prev >= bars.length) {
+          window.clearInterval(timer)
+          return prev
+        }
+        return Math.min(bars.length, prev + 1)
+      })
+    }, Math.max(80, 700 / replaySpeed))
+    return () => window.clearInterval(timer)
+  }, [replayMode, isPlaying, replaySpeed, bars.length])
+
+  useEffect(() => {
+    if (visibleCount >= bars.length && isPlaying) {
+      setIsPlaying(false)
+    }
+  }, [visibleCount, bars.length, isPlaying])
+
+  const replayBars = useMemo(() => {
+    if (!replayMode) return bars
+    return bars.slice(0, Math.max(1, Math.min(visibleCount, bars.length)))
+  }, [bars, replayMode, visibleCount])
+
   const activeMAs = centerState.selectedIds.includes('MA') ? centerState.maLines.filter((line) => line.length > 0) : []
   const activeEMAs = centerState.selectedIds.includes('EMA') ? centerState.emaLines.filter((line) => line.length > 0) : []
+
+  const restartReplay = () => {
+    if (!bars.length) return
+    const minStart = Math.min(120, bars.length)
+    const maxStart = Math.max(minStart, bars.length - 80)
+    const next = Math.max(minStart, Math.floor(Math.random() * (maxStart - minStart + 1)) + minStart)
+    setVisibleCount(next)
+    setIsPlaying(false)
+  }
 
   return (
     <div className="app-shell">
@@ -464,6 +567,9 @@ export default function TrainingPage() {
           ))}
         </div>
         <div className="toolbar-actions">
+          <button className={replayMode ? 'btn active compact-btn' : 'btn compact-btn'} onClick={() => { setReplayMode((prev) => !prev); setIsPlaying(false) }} title="切换复盘模式">
+            {replayMode ? '复盘中' : '看全图'}
+          </button>
           <button className="btn secondary compact-btn" onClick={() => setCenterState(defaultIndicatorState())} title="恢复当前交易对默认指标">重置</button>
           <button className="btn primary only-icon compact-icon-btn" onClick={() => setOpen(true)} title="指标中心">
             <span className="toolbar-icon">ƒx</span>
@@ -476,8 +582,28 @@ export default function TrainingPage() {
           <div className="chart-header stacked compact-chart-header">
             <div className="chart-header-top">
               <div className="chart-title">{symbol} 永续 · {interval}</div>
-              <div className="chart-note">时间轴已隐藏 · v1.2.21 Binance futures klines</div>
+              <div className="chart-note">时间轴已隐藏 · v1.2.23 复盘播放控制版</div>
             </div>
+
+            <div className="replay-toolbar">
+              <button className="btn compact-btn" onClick={() => setIsPlaying((prev) => !prev)} disabled={!replayMode || !bars.length}>
+                {isPlaying ? '暂停' : '播放'}
+              </button>
+              <button className="btn compact-btn" onClick={() => setVisibleCount((prev) => Math.min(bars.length, prev + 1))} disabled={!replayMode || visibleCount >= bars.length}>
+                前进一步
+              </button>
+              <button className="btn compact-btn" onClick={restartReplay} disabled={!replayMode || !bars.length}>
+                随机起点
+              </button>
+              <div className="speed-box">
+                <span className="speed-label">速度</span>
+                <select className="speed-select" value={replaySpeed} onChange={(e) => setReplaySpeed(Number(e.target.value))} disabled={!replayMode}>
+                  {replaySpeeds.map((speed) => <option key={speed} value={speed}>{speed}x</option>)}
+                </select>
+              </div>
+              <div className="progress-chip">进度：{replayBars.length} / {bars.length || 0}</div>
+            </div>
+
             <div className="loaded-indicators-bar compact-loaded">
               {activeMAs.map((line) => (
                 <div key={`ma-${line.id}`} className="indicator-chip passive compact-chip">
@@ -493,12 +619,13 @@ export default function TrainingPage() {
               ))}
               {centerState.selectedIds.includes('RSI') ? <div className="indicator-chip passive compact-chip"><span className="dot" style={{ background: '#38bdf8' }} />RSI({centerState.rsiPeriod})</div> : null}
               {centerState.selectedIds.includes('MACD') ? <div className="indicator-chip passive compact-chip"><span className="dot" style={{ background: '#f0b90b' }} />MACD({centerState.macdConfig.fast},{centerState.macdConfig.slow},{centerState.macdConfig.signal})</div> : null}
-              <div className="persist-chip">已保存到本地：{symbol}</div>
+              <div className="persist-chip">指标已保存：{symbol}</div>
+              <div className={`cache-chip ${cacheStatus}`}>{cacheStatus === 'fresh' ? 'K线缓存命中' : cacheStatus === 'stale' ? 'K线旧缓存' : cacheStatus === 'remote' ? 'K线远端已刷新' : '无缓存'}</div>
             </div>
             {dataError ? <div className="error-banner">{dataError}</div> : null}
           </div>
           <div className="chart-wrap compact-chart-wrap">
-            <KlineChart bars={bars} state={centerState} loading={loading} />
+            <KlineChart bars={replayBars} state={centerState} loading={loading} />
           </div>
         </main>
       </div>
