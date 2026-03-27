@@ -43,7 +43,7 @@ type TradeRecord = {
   status: 'open' | 'closed'
 }
 
-const intervals = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1W']
+const intervals = ['1m', '5m', '15m', '15m', '1h', '4h', '1d', '1W']
 const symbols = ['BTCUSDT', 'ETHUSDT']
 const replaySpeeds = [1, 2, 4, 8]
 const STORAGE_KEY = 'seacat-backtest-indicator-profiles-v1'
@@ -55,7 +55,7 @@ const defaultIndicatorState = (): IndicatorCenterState => ({
   selectedIds: ['MA', 'EMA', 'RSI', 'MACD'],
   maLines: [
     { id: 1, length: 7, color: '#ffffff', width: 1 },
-    { id: 2, length: 30, color: '#f0b90b', width: 2 },
+    { id: 2, length: 15, color: '#f0b90b', width: 2 },
     { id: 3, length: 0, color: '#a855f7', width: 2 },
     { id: 4, length: 0, color: '#38bdf8', width: 2 },
     { id: 5, length: 0, color: '#22c55e', width: 2 },
@@ -149,17 +149,50 @@ function generateMockBars(count = 120): Bar[] {
 }
 
 async function fetchFuturesKlines(symbol: string, interval: string, limit = 5000): Promise<Bar[]> {
-  const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`
-  const res = await fetch(url)
-  if (!res.ok) throw new Error(`Binance API ${res.status}`)
-  const raw = await res.json()
-  if (!Array.isArray(raw)) throw new Error('Unexpected Binance response')
-  return raw.map((item: any) => ({
-    open: Number(item[1]),
-    high: Number(item[2]),
-    low: Number(item[3]),
-    close: Number(item[4]),
-  }))
+  const target = Math.max(100, Math.min(limit, 5000))
+  const chunkSize = 1000
+  let endTime: number | undefined = undefined
+  let rawRows: any[] = []
+
+  while (rawRows.length < target) {
+    const remaining = target - rawRows.length
+    const currentLimit = Math.min(chunkSize, remaining)
+    const url = new URL('https://fapi.binance.com/fapi/v1/klines')
+    url.searchParams.set('symbol', symbol)
+    url.searchParams.set('interval', interval)
+    url.searchParams.set('limit', String(currentLimit))
+    if (typeof endTime === 'number') {
+      url.searchParams.set('endTime', String(endTime))
+    }
+
+    const res = await fetch(url.toString())
+    if (!res.ok) throw new Error(`Binance API ${res.status}`)
+    const raw = await res.json()
+    if (!Array.isArray(raw) || raw.length === 0) break
+
+    rawRows = [...raw, ...rawRows]
+    const first = raw[0]
+    const firstOpenTime = Array.isArray(first) ? Number(first[0]) : NaN
+    if (!Number.isFinite(firstOpenTime)) break
+    endTime = firstOpenTime - 1
+
+    if (raw.length < currentLimit) break
+  }
+
+  const deduped = new Map<number, any>()
+  for (const row of rawRows) {
+    if (Array.isArray(row)) deduped.set(Number(row[0]), row)
+  }
+
+  return Array.from(deduped.values())
+    .sort((a, b) => Number(a[0]) - Number(b[0]))
+    .slice(-target)
+    .map((item: any) => ({
+      open: Number(item[1]),
+      high: Number(item[2]),
+      low: Number(item[3]),
+      close: Number(item[4]),
+    }))
 }
 
 function calcMA(values: number[], length: number): Array<number | null> {
@@ -280,10 +313,10 @@ function IndicatorSubcharts({
             <rect x="0" y="0" width={width} height="140" fill="#0b0e11" />
             <line x1="0" y1={scaleRsi(70)} x2={width} y2={scaleRsi(70)} stroke="#475569" strokeDasharray="4 4" />
             <line x1="0" y1={scaleRsi(50)} x2={width} y2={scaleRsi(50)} stroke="#334155" strokeDasharray="3 5" />
-            <line x1="0" y1={scaleRsi(30)} x2={width} y2={scaleRsi(30)} stroke="#475569" strokeDasharray="4 4" />
+            <line x1="0" y1={scaleRsi(15)} x2={width} y2={scaleRsi(15)} stroke="#475569" strokeDasharray="4 4" />
             <text x="6" y={scaleRsi(70)-4} fill="#94a3b8" fontSize="10">70</text>
             <text x="6" y={scaleRsi(50)-4} fill="#64748b" fontSize="10">50</text>
-            <text x="6" y={scaleRsi(30)-4} fill="#94a3b8" fontSize="10">30</text>
+            <text x="6" y={scaleRsi(15)-4} fill="#94a3b8" fontSize="10">15</text>
             <polyline points={buildPolylinePoints(rsi, scaleRsi, xForIndex)} fill="none" stroke="#38bdf8" strokeWidth="2" />
             {hoverIndex !== null ? <line x1={xForIndex(hoverIndex)} y1="0" x2={xForIndex(hoverIndex)} y2="140" stroke="#94a3b8" strokeDasharray="4 4" /> : null}
           </svg>
@@ -483,24 +516,24 @@ function KlineChart({
 
           {tradeRecords.map((record) => {
             if (record.entryBarIndex < 0 || record.entryBarIndex >= bars.length) return null
+            const entryBar = bars[record.entryBarIndex]
             const entryX = xForIndex(record.entryBarIndex)
-            const entryY = scaleY(record.entryPrice)
-            const openTextY = record.side === 'long' ? entryY - 48 : entryY + 48
-            const openTriangle = record.side === 'long'
-              ? `${entryX},${entryY-40} ${entryX-8},${entryY-22} ${entryX+8},${entryY-22}`
-              : `${entryX},${entryY+40} ${entryX-8},${entryY+22} ${entryX+8},${entryY+22}`
+            const entryAnchorY = scaleY(entryBar.high) - 15
+            const openTextY = entryAnchorY - 18
+            const openTriangle = `${entryX},${entryAnchorY - 14} ${entryX-8},${entryAnchorY + 4} ${entryX+8},${entryAnchorY + 4}`
             const exitX = record.status === 'closed' && typeof record.exitBarIndex === 'number' ? xForIndex(record.exitBarIndex) : null
-            const exitY = record.status === 'closed' && typeof record.exitPrice === 'number' ? scaleY(record.exitPrice) : null
-            const exitTextY = exitY !== null ? exitY - 48 : null
+            const exitBar = record.status === 'closed' && typeof record.exitBarIndex === 'number' ? bars[record.exitBarIndex] : null
+            const exitAnchorY = exitBar ? scaleY(exitBar.high) - 15 : null
+            const exitTextY = exitAnchorY !== null ? exitAnchorY - 18 : null
             return (
               <g key={`marks-${record.id}`}>
                 <polygon points={openTriangle} fill={record.side === 'long' ? '#4ade80' : '#f87171'} opacity="0.95" />
                 <text x={entryX + 12} y={openTextY} fill={record.side === 'long' ? '#4ade80' : '#f87171'} fontSize="12" fontWeight="700">
                   {record.side === 'long' ? '开多' : '开空'}
                 </text>
-                {exitX !== null && exitY !== null && exitTextY !== null ? (
+                {exitX !== null && exitAnchorY !== null && exitTextY !== null ? (
                   <>
-                    <polygon points={`${exitX},${exitY-40} ${exitX-8},${exitY-22} ${exitX+8},${exitY-22}`} fill="#f0b90b" opacity="0.95" />
+                    <polygon points={`${exitX},${exitAnchorY - 14} ${exitX-8},${exitAnchorY + 4} ${exitX+8},${exitAnchorY + 4}`} fill="#f0b90b" opacity="0.95" />
                     <text x={exitX + 12} y={exitTextY} fill="#f0b90b" fontSize="12" fontWeight="700">平仓</text>
                   </>
                 ) : null}
@@ -765,7 +798,7 @@ export default function TrainingPage() {
           <div className="chart-header stacked compact-chart-header">
             <div className="chart-header-top">
               <div className="chart-title">{symbol} 永续 · {interval}</div>
-              <div className="chart-note">时间轴已隐藏 · v1.2.30 箭头修正与5000根K线版</div>
+              <div className="chart-note">时间轴已隐藏 · v1.2.32 箭头高点偏移与5000根分页版</div>
             </div>
 
             <div className="replay-toolbar">
@@ -784,7 +817,7 @@ export default function TrainingPage() {
                   {replaySpeeds.map((speed) => <option key={speed} value={speed}>{speed}x</option>)}
                 </select>
               </div>
-              <div className="progress-chip">进度：{replayMode ? Math.min(visibleCount, bars.length) : bars.length} / {bars.length || 0}</div>
+              <div className="progress-chip">进度：{replayMode ? Math.min(visibleCount, bars.length) : bars.length} / 已加载 {bars.length || 0} 根</div>
             </div>
 
             <div className="trade-ui-panel">
