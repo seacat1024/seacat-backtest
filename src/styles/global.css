@@ -423,3 +423,39 @@ button, input, select { font: inherit; }
   border-radius: 8px;
   background: rgba(16, 24, 40, 0.7);
 }
+
+
+.trade-ui-panel {
+  display: grid;
+  grid-template-columns: minmax(380px, 560px) 1fr;
+  gap: 10px;
+}
+.trade-card, .metric-card {
+  border: 1px solid #243244;
+  border-radius: 12px;
+  background: rgba(10, 18, 32, 0.85);
+}
+.trade-card { padding: 10px 12px; }
+.trade-card-title { font-size: 13px; font-weight: 700; color: #e5e7eb; margin-bottom: 8px; }
+.trade-grid {
+  display: grid;
+  grid-template-columns: 64px 120px 64px 120px;
+  gap: 8px;
+  align-items: center;
+}
+.trade-action-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.trade-ui-right {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
+  gap: 8px;
+}
+.metric-card { padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+.metric-card.wide { grid-column: span 2; }
+.metric-label { font-size: 11px; color: #94a3b8; }
+.metric-value { font-size: 14px; font-weight: 700; color: #e5e7eb; }
+.up { color: #4ade80 !important; }
+.down { color: #f87171 !important; }
+@media (max-width: 1200px) {
+  .trade-ui-panel { grid-template-columns: 1fr; }
+  .trade-ui-right { grid-template-columns: repeat(2, minmax(150px, 1fr)); }
+}

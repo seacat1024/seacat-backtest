@@ -232,6 +232,10 @@ function buildPolylinePoints(series: Array<number | null>, scaleY: (v: number) =
   return series.map((value, i) => value === null ? null : `${xForIndex(i)},${scaleY(value)}`).filter(Boolean).join(' ')
 }
 
+function formatPnl(v: number) {
+  return `${v >= 0 ? '+' : ''}${v.toFixed(2)}`
+}
+
 function IndicatorSubcharts({
   closes,
   xForIndex,
@@ -422,12 +426,27 @@ function KlineChart({
             const exitX = isClosed ? xForIndex(record.exitBarIndex!) : xForIndex(bars.length - 1)
             const exitY = isClosed ? scaleY(record.exitPrice!) : scaleY(currentPrice || record.entryPrice)
             const lineColor = isClosed ? ((record.pnl ?? 0) >= 0 ? '#22c55e' : '#ef4444') : '#60a5fa'
+            const fillColor = isClosed
+              ? ((record.pnl ?? 0) >= 0 ? 'rgba(34,197,94,0.10)' : 'rgba(239,68,68,0.10)')
+              : 'rgba(96,165,250,0.08)'
             const dash = isClosed ? undefined : '5 4'
+            const leftX = Math.min(entryX, exitX)
+            const rightX = Math.max(entryX, exitX)
+            const topY = Math.min(entryY, exitY) - 10
+            const bottomY = Math.max(entryY, exitY) + 10
+            const midX = (entryX + exitX) / 2
+            const midY = (entryY + exitY) / 2 - 10
+            const pnlText = isClosed ? formatPnl(record.pnl ?? 0) : `持仓 ${record.side === 'long' ? '多' : '空'}`
             return (
               <g key={`link-${record.id}`}>
-                <line x1={entryX} y1={entryY} x2={exitX} y2={exitY} stroke={lineColor} strokeWidth="2" strokeDasharray={dash} opacity="0.95" />
+                <rect x={leftX} y={topY} width={Math.max(6, rightX - leftX)} height={Math.max(20, bottomY - topY)} fill={fillColor} rx="6" />
+                <line x1={entryX} y1={entryY} x2={exitX} y2={exitY} stroke={lineColor} strokeWidth="2.5" strokeDasharray={dash} opacity="0.98" />
                 <circle cx={entryX} cy={entryY} r="4" fill={lineColor} />
                 <circle cx={exitX} cy={exitY} r="4" fill={lineColor} />
+                <rect x={midX - 26} y={midY - 12} width="52" height="18" rx="6" fill="rgba(2,6,23,0.88)" stroke={lineColor} />
+                <text x={midX} y={midY + 1} fill={lineColor} fontSize="11" fontWeight="700" textAnchor="middle">
+                  {pnlText}
+                </text>
               </g>
             )
           })}
@@ -466,23 +485,23 @@ function KlineChart({
             if (record.entryBarIndex < 0 || record.entryBarIndex >= bars.length) return null
             const entryX = xForIndex(record.entryBarIndex)
             const entryY = scaleY(record.entryPrice)
-            const openTextY = record.side === 'long' ? entryY - 22 : entryY + 26
+            const openTextY = record.side === 'long' ? entryY - 34 : entryY + 34
             const openTriangle = record.side === 'long'
-              ? `${entryX},${entryY-16} ${entryX-8},${entryY} ${entryX+8},${entryY}`
-              : `${entryX},${entryY+16} ${entryX-8},${entryY} ${entryX+8},${entryY}`
+              ? `${entryX},${entryY-26} ${entryX-8},${entryY-10} ${entryX+8},${entryY-10}`
+              : `${entryX},${entryY+26} ${entryX-8},${entryY+10} ${entryX+8},${entryY+10}`
             const exitX = record.status === 'closed' && typeof record.exitBarIndex === 'number' ? xForIndex(record.exitBarIndex) : null
             const exitY = record.status === 'closed' && typeof record.exitPrice === 'number' ? scaleY(record.exitPrice) : null
-            const exitTextY = exitY !== null ? exitY - 18 : null
+            const exitTextY = exitY !== null ? exitY - 34 : null
             return (
               <g key={`marks-${record.id}`}>
                 <polygon points={openTriangle} fill={record.side === 'long' ? '#4ade80' : '#f87171'} opacity="0.95" />
-                <text x={entryX + 10} y={openTextY} fill={record.side === 'long' ? '#4ade80' : '#f87171'} fontSize="12" fontWeight="700">
+                <text x={entryX + 12} y={openTextY} fill={record.side === 'long' ? '#4ade80' : '#f87171'} fontSize="12" fontWeight="700">
                   {record.side === 'long' ? '开多' : '开空'}
                 </text>
                 {exitX !== null && exitY !== null && exitTextY !== null ? (
                   <>
-                    <polygon points={`${exitX},${exitY-16} ${exitX-8},${exitY} ${exitX+8},${exitY}`} fill="#f0b90b" opacity="0.95" />
-                    <text x={exitX + 10} y={exitTextY} fill="#f0b90b" fontSize="12" fontWeight="700">平仓</text>
+                    <polygon points={`${exitX},${exitY-26} ${exitX-8},${exitY-10} ${exitX+8},${exitY-10}`} fill="#f0b90b" opacity="0.95" />
+                    <text x={exitX + 12} y={exitTextY} fill="#f0b90b" fontSize="12" fontWeight="700">平仓</text>
                   </>
                 ) : null}
               </g>
@@ -746,7 +765,7 @@ export default function TrainingPage() {
           <div className="chart-header stacked compact-chart-header">
             <div className="chart-header-top">
               <div className="chart-title">{symbol} 永续 · {interval}</div>
-              <div className="chart-note">时间轴已隐藏 · v1.2.28 开平仓连线版</div>
+              <div className="chart-note">时间轴已隐藏 · v1.2.29 持仓高亮与专业交易UI版</div>
             </div>
 
             <div className="replay-toolbar">
@@ -768,26 +787,28 @@ export default function TrainingPage() {
               <div className="progress-chip">进度：{replayMode ? Math.min(visibleCount, bars.length) : bars.length} / {bars.length || 0}</div>
             </div>
 
-            <div className="trade-toolbar">
-              <div className="account-box">
-                <span>初始资金</span>
-                <input className="trade-input" type="number" value={initialBalance} onChange={(e) => setInitialBalance(Number(e.target.value) || 0)} />
-                <button className="btn compact-btn" onClick={resetAccount}>重置账户</button>
+            <div className="trade-ui-panel">
+              <div className="trade-card">
+                <div className="trade-card-title">账户与下单</div>
+                <div className="trade-grid">
+                  <label>初始资金</label>
+                  <input className="trade-input" type="number" value={initialBalance} onChange={(e) => setInitialBalance(Number(e.target.value) || 0)} />
+                  <label>下单数量</label>
+                  <input className="trade-input" type="number" value={orderQty} step="0.01" onChange={(e) => setOrderQty(Number(e.target.value) || 0)} />
+                </div>
+                <div className="trade-action-row">
+                  <button className="btn compact-btn" onClick={resetAccount}>重置账户</button>
+                  <button className="btn buy-btn compact-btn" onClick={() => openPosition('long')} disabled={!!position || !currentPrice}>开多</button>
+                  <button className="btn sell-btn compact-btn" onClick={() => openPosition('short')} disabled={!!position || !currentPrice}>开空</button>
+                  <button className="btn secondary compact-btn" onClick={closePosition} disabled={!position}>平仓</button>
+                </div>
               </div>
-              <div className="account-box">
-                <span>下单数量</span>
-                <input className="trade-input" type="number" value={orderQty} step="0.01" onChange={(e) => setOrderQty(Number(e.target.value) || 0)} />
-                <button className="btn buy-btn compact-btn" onClick={() => openPosition('long')} disabled={!!position || !currentPrice}>开多</button>
-                <button className="btn sell-btn compact-btn" onClick={() => openPosition('short')} disabled={!!position || !currentPrice}>开空</button>
-                <button className="btn secondary compact-btn" onClick={closePosition} disabled={!position}>平仓</button>
-              </div>
-              <div className="account-summary">
-                <span>现价 {currentPrice.toFixed(2)}</span>
-                <span>余额 {balance.toFixed(2)}</span>
-                <span>浮盈亏 {floatingPnl.toFixed(2)}</span>
-                <span>已实现 {realizedPnl.toFixed(2)}</span>
-                <span>净值 {equity.toFixed(2)}</span>
-                <span>{position ? `持仓 ${position.side === 'long' ? '多' : '空'} ${position.qty} @ ${position.entry.toFixed(2)}` : '暂无持仓'}</span>
+              <div className="trade-ui-right">
+                <div className="metric-card"><span className="metric-label">现价</span><span className="metric-value">{currentPrice.toFixed(2)}</span></div>
+                <div className="metric-card"><span className="metric-label">余额</span><span className="metric-value">{balance.toFixed(2)}</span></div>
+                <div className="metric-card"><span className="metric-label">浮盈亏</span><span className={`metric-value ${floatingPnl >= 0 ? 'up' : 'down'}`}>{formatPnl(floatingPnl)}</span></div>
+                <div className="metric-card"><span className="metric-label">已实现</span><span className={`metric-value ${realizedPnl >= 0 ? 'up' : 'down'}`}>{formatPnl(realizedPnl)}</span></div>
+                <div className="metric-card wide"><span className="metric-label">净值 / 持仓</span><span className="metric-value">{equity.toFixed(2)} · {position ? `${position.side === 'long' ? '多' : '空'} ${position.qty} @ ${position.entry.toFixed(2)}` : '暂无持仓'}</span></div>
               </div>
             </div>
 
@@ -826,7 +847,7 @@ export default function TrainingPage() {
                   <span>量 {record.qty}</span>
                   <span>第 {record.entryBarIndex + 1} 根</span>
                   <span>{record.status === 'closed' && typeof record.exitPrice === 'number' ? `平 ${record.exitPrice.toFixed(2)}` : '持仓中'}</span>
-                  <span>{record.status === 'closed' ? `盈亏 ${(record.pnl ?? 0).toFixed(2)}` : '--'}</span>
+                  <span className={(record.pnl ?? 0) >= 0 ? 'up' : 'down'}>{record.status === 'closed' ? `盈亏 ${(record.pnl ?? 0).toFixed(2)}` : '--'}</span>
                 </div>
               ))}
             </div>
