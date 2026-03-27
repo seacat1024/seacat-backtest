@@ -29,6 +29,8 @@ type PositionState = {
   qty: number
   entry: number
   entryBarIndex: number
+  takeProfit?: number
+  stopLoss?: number
 }
 
 type TradeRecord = {
@@ -37,9 +39,13 @@ type TradeRecord = {
   qty: number
   entryPrice: number
   entryBarIndex: number
+  takeProfit?: number
+  stopLoss?: number
   exitPrice?: number
   exitBarIndex?: number
   pnl?: number
+  feePaid?: number
+  closeReason?: 'manual' | 'tp' | 'sl'
   status: 'open' | 'closed'
 }
 
@@ -596,6 +602,9 @@ export default function TrainingPage() {
   const [initialBalance, setInitialBalance] = useState(10000)
   const [balance, setBalance] = useState(10000)
   const [orderQty, setOrderQty] = useState(0.1)
+  const [takeProfitInput, setTakeProfitInput] = useState(0)
+  const [stopLossInput, setStopLossInput] = useState(0)
+  const [feeRate, setFeeRate] = useState(0.04)
   const [position, setPosition] = useState<PositionState | null>(null)
   const [realizedPnl, setRealizedPnl] = useState(0)
   const [tradeRecords, setTradeRecords] = useState<TradeRecord[]>([])
@@ -686,6 +695,7 @@ export default function TrainingPage() {
   }, [bars, replayMode, visibleCount])
 
   const currentPrice = replayBars.length ? replayBars[replayBars.length - 1].close : 0
+  const latestBar = replayBars.length ? replayBars[replayBars.length - 1] : null
   const visibleStart = replayMode ? Math.max(0, Math.max(1, Math.min(visibleCount, bars.length)) - DISPLAY_WINDOW) : 0
   const visibleTradeRecords = tradeRecords
     .filter((record) => {
@@ -725,39 +735,28 @@ export default function TrainingPage() {
     setTradeRecords([])
   }
 
-  const openPosition = (side: PositionSide) => {
-    if (!currentPrice || orderQty <= 0 || position) return
-    const globalIndex = replayMode ? Math.max(0, Math.min(visibleCount, bars.length) - 1) : Math.max(0, bars.length - 1)
-    const record: TradeRecord = {
-      id: `${Date.now()}-${side}`,
-      side,
-      qty: orderQty,
-      entryPrice: currentPrice,
-      entryBarIndex: globalIndex,
-      status: 'open',
-    }
-    setPosition({ side, qty: orderQty, entry: currentPrice, entryBarIndex: globalIndex })
-    setTradeRecords((prev) => [...prev, record])
-  }
-
-  const closePosition = () => {
-    if (!position || !currentPrice) return
+  const settlePosition = (exitPrice: number, closeReason: 'manual' | 'tp' | 'sl') => {
+    if (!position) return
     const exitIndex = replayMode ? Math.max(0, Math.min(visibleCount, bars.length) - 1) : Math.max(0, bars.length - 1)
-    const pnl = position.side === 'long'
-      ? (currentPrice - position.entry) * position.qty
-      : (position.entry - currentPrice) * position.qty
+    const grossPnl = position.side === 'long'
+      ? (exitPrice - position.entry) * position.qty
+      : (position.entry - exitPrice) * position.qty
+    const feePaid = (position.entry + exitPrice) * position.qty * (feeRate / 100)
+    const netPnl = grossPnl - feePaid
 
-    setBalance((prev) => prev + pnl)
-    setRealizedPnl((prev) => prev + pnl)
+    setBalance((prev) => prev + netPnl)
+    setRealizedPnl((prev) => prev + netPnl)
     setTradeRecords((prev) => {
       const next = [...prev]
       for (let i = next.length - 1; i >= 0; i--) {
         if (next[i].status === 'open') {
           next[i] = {
             ...next[i],
-            exitPrice: currentPrice,
+            exitPrice,
             exitBarIndex: exitIndex,
-            pnl,
+            pnl: netPnl,
+            feePaid,
+            closeReason,
             status: 'closed',
           }
           break
@@ -767,6 +766,54 @@ export default function TrainingPage() {
     })
     setPosition(null)
   }
+
+  const openPosition = (side: PositionSide) => {
+    if (!currentPrice || orderQty <= 0 || position) return
+    const globalIndex = replayMode ? Math.max(0, Math.min(visibleCount, bars.length) - 1) : Math.max(0, bars.length - 1)
+    const tp = takeProfitInput > 0 ? takeProfitInput : undefined
+    const sl = stopLossInput > 0 ? stopLossInput : undefined
+    const record: TradeRecord = {
+      id: `${Date.now()}-${side}`,
+      side,
+      qty: orderQty,
+      entryPrice: currentPrice,
+      entryBarIndex: globalIndex,
+      takeProfit: tp,
+      stopLoss: sl,
+      status: 'open',
+    }
+    setPosition({ side, qty: orderQty, entry: currentPrice, entryBarIndex: globalIndex, takeProfit: tp, stopLoss: sl })
+    setTradeRecords((prev) => [...prev, record])
+  }
+
+  const closePosition = () => {
+    if (!position || !currentPrice) return
+    settlePosition(currentPrice, 'manual')
+  }
+
+  useEffect(() => {
+    if (!position || !latestBar) return
+
+    if (position.side === 'long') {
+      if (typeof position.stopLoss === 'number' && position.stopLoss > 0 && latestBar.low <= position.stopLoss) {
+        settlePosition(position.stopLoss, 'sl')
+        return
+      }
+      if (typeof position.takeProfit === 'number' && position.takeProfit > 0 && latestBar.high >= position.takeProfit) {
+        settlePosition(position.takeProfit, 'tp')
+        return
+      }
+    } else {
+      if (typeof position.stopLoss === 'number' && position.stopLoss > 0 && latestBar.high >= position.stopLoss) {
+        settlePosition(position.stopLoss, 'sl')
+        return
+      }
+      if (typeof position.takeProfit === 'number' && position.takeProfit > 0 && latestBar.low <= position.takeProfit) {
+        settlePosition(position.takeProfit, 'tp')
+        return
+      }
+    }
+  }, [latestBar, position, visibleCount])
 
   return (
     <div className="app-shell">
@@ -798,7 +845,7 @@ export default function TrainingPage() {
           <div className="chart-header stacked compact-chart-header">
             <div className="chart-header-top">
               <div className="chart-title">{symbol} 永续 · {interval}</div>
-              <div className="chart-note">时间轴已隐藏 · v1.2.32 箭头高点偏移与5000根分页版</div>
+              <div className="chart-note">时间轴已隐藏 · v1.2.33 箭头高点偏移与5000根分页版</div>
             </div>
 
             <div className="replay-toolbar">
@@ -823,11 +870,17 @@ export default function TrainingPage() {
             <div className="trade-ui-panel">
               <div className="trade-card">
                 <div className="trade-card-title">账户与下单</div>
-                <div className="trade-grid">
+                <div className="trade-grid trade-grid-3">
                   <label>初始资金</label>
                   <input className="trade-input" type="number" value={initialBalance} onChange={(e) => setInitialBalance(Number(e.target.value) || 0)} />
                   <label>下单数量</label>
                   <input className="trade-input" type="number" value={orderQty} step="0.01" onChange={(e) => setOrderQty(Number(e.target.value) || 0)} />
+                  <label>止盈</label>
+                  <input className="trade-input" type="number" value={takeProfitInput} onChange={(e) => setTakeProfitInput(Number(e.target.value) || 0)} />
+                  <label>止损</label>
+                  <input className="trade-input" type="number" value={stopLossInput} onChange={(e) => setStopLossInput(Number(e.target.value) || 0)} />
+                  <label>手续费%</label>
+                  <input className="trade-input" type="number" step="0.01" value={feeRate} onChange={(e) => setFeeRate(Number(e.target.value) || 0)} />
                 </div>
                 <div className="trade-action-row">
                   <button className="btn compact-btn" onClick={resetAccount}>重置账户</button>
@@ -841,7 +894,7 @@ export default function TrainingPage() {
                 <div className="metric-card"><span className="metric-label">余额</span><span className="metric-value">{balance.toFixed(2)}</span></div>
                 <div className="metric-card"><span className="metric-label">浮盈亏</span><span className={`metric-value ${floatingPnl >= 0 ? 'up' : 'down'}`}>{formatPnl(floatingPnl)}</span></div>
                 <div className="metric-card"><span className="metric-label">已实现</span><span className={`metric-value ${realizedPnl >= 0 ? 'up' : 'down'}`}>{formatPnl(realizedPnl)}</span></div>
-                <div className="metric-card wide"><span className="metric-label">净值 / 持仓</span><span className="metric-value">{equity.toFixed(2)} · {position ? `${position.side === 'long' ? '多' : '空'} ${position.qty} @ ${position.entry.toFixed(2)}` : '暂无持仓'}</span></div>
+                <div className="metric-card wide"><span className="metric-label">净值 / 持仓</span><span className="metric-value">{equity.toFixed(2)} · {position ? `${position.side === 'long' ? '多' : '空'} ${position.qty} @ ${position.entry.toFixed(2)}${position.takeProfit ? ` · TP ${position.takeProfit}` : ''}${position.stopLoss ? ` · SL ${position.stopLoss}` : ''}` : '暂无持仓'}</span></div>
               </div>
             </div>
 
@@ -879,8 +932,8 @@ export default function TrainingPage() {
                   <span>开 {record.entryPrice.toFixed(2)}</span>
                   <span>量 {record.qty}</span>
                   <span>第 {record.entryBarIndex + 1} 根</span>
-                  <span>{record.status === 'closed' && typeof record.exitPrice === 'number' ? `平 ${record.exitPrice.toFixed(2)}` : '持仓中'}</span>
-                  <span className={(record.pnl ?? 0) >= 0 ? 'up' : 'down'}>{record.status === 'closed' ? `盈亏 ${(record.pnl ?? 0).toFixed(2)}` : '--'}</span>
+                  <span>{record.status === 'closed' && typeof record.exitPrice === 'number' ? `平 ${record.exitPrice.toFixed(2)} / ${record.closeReason || 'manual'}` : '持仓中'}</span>
+                  <span className={(record.pnl ?? 0) >= 0 ? 'up' : 'down'}>{record.status === 'closed' ? `盈亏 ${(record.pnl ?? 0).toFixed(2)} · 费 ${(record.feePaid ?? 0).toFixed(2)}` : '--'}</span>
                 </div>
               ))}
             </div>

@@ -459,3 +459,13 @@ button, input, select { font: inherit; }
   .trade-ui-panel { grid-template-columns: 1fr; }
   .trade-ui-right { grid-template-columns: repeat(2, minmax(150px, 1fr)); }
 }
+
+
+.trade-grid-3 {
+  grid-template-columns: 64px 120px 64px 120px 64px 120px;
+}
+@media (max-width: 1200px) {
+  .trade-grid-3 {
+    grid-template-columns: 64px 1fr 64px 1fr;
+  }
+}
