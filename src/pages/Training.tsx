@@ -148,7 +148,7 @@ function generateMockBars(count = 120): Bar[] {
   return out
 }
 
-async function fetchFuturesKlines(symbol: string, interval: string, limit = 500): Promise<Bar[]> {
+async function fetchFuturesKlines(symbol: string, interval: string, limit = 5000): Promise<Bar[]> {
   const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`
   const res = await fetch(url)
   if (!res.ok) throw new Error(`Binance API ${res.status}`)
@@ -485,13 +485,13 @@ function KlineChart({
             if (record.entryBarIndex < 0 || record.entryBarIndex >= bars.length) return null
             const entryX = xForIndex(record.entryBarIndex)
             const entryY = scaleY(record.entryPrice)
-            const openTextY = record.side === 'long' ? entryY - 34 : entryY + 34
+            const openTextY = record.side === 'long' ? entryY - 48 : entryY + 48
             const openTriangle = record.side === 'long'
-              ? `${entryX},${entryY-26} ${entryX-8},${entryY-10} ${entryX+8},${entryY-10}`
-              : `${entryX},${entryY+26} ${entryX-8},${entryY+10} ${entryX+8},${entryY+10}`
+              ? `${entryX},${entryY-40} ${entryX-8},${entryY-22} ${entryX+8},${entryY-22}`
+              : `${entryX},${entryY+40} ${entryX-8},${entryY+22} ${entryX+8},${entryY+22}`
             const exitX = record.status === 'closed' && typeof record.exitBarIndex === 'number' ? xForIndex(record.exitBarIndex) : null
             const exitY = record.status === 'closed' && typeof record.exitPrice === 'number' ? scaleY(record.exitPrice) : null
-            const exitTextY = exitY !== null ? exitY - 34 : null
+            const exitTextY = exitY !== null ? exitY - 48 : null
             return (
               <g key={`marks-${record.id}`}>
                 <polygon points={openTriangle} fill={record.side === 'long' ? '#4ade80' : '#f87171'} opacity="0.95" />
@@ -500,7 +500,7 @@ function KlineChart({
                 </text>
                 {exitX !== null && exitY !== null && exitTextY !== null ? (
                   <>
-                    <polygon points={`${exitX},${exitY-26} ${exitX-8},${exitY-10} ${exitX+8},${exitY-10}`} fill="#f0b90b" opacity="0.95" />
+                    <polygon points={`${exitX},${exitY-40} ${exitX-8},${exitY-22} ${exitX+8},${exitY-22}`} fill="#f0b90b" opacity="0.95" />
                     <text x={exitX + 12} y={exitTextY} fill="#f0b90b" fontSize="12" fontWeight="700">平仓</text>
                   </>
                 ) : null}
@@ -598,7 +598,7 @@ export default function TrainingPage() {
     setDataError('')
     setIsPlaying(false)
 
-    fetchFuturesKlines(symbol, interval, 500)
+    fetchFuturesKlines(symbol, interval, 5000)
       .then((nextBars) => {
         if (cancelled) return
         setBars(nextBars)
@@ -765,7 +765,7 @@ export default function TrainingPage() {
           <div className="chart-header stacked compact-chart-header">
             <div className="chart-header-top">
               <div className="chart-title">{symbol} 永续 · {interval}</div>
-              <div className="chart-note">时间轴已隐藏 · v1.2.29 持仓高亮与专业交易UI版</div>
+              <div className="chart-note">时间轴已隐藏 · v1.2.30 箭头修正与5000根K线版</div>
             </div>
 
             <div className="replay-toolbar">
