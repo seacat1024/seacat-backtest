@@ -123,6 +123,76 @@ function saveKlineCache(symbol: string, interval: string, bars: Bar[]) {
   localStorage.setItem(getKlineCacheKey(symbol, interval), JSON.stringify(payload))
 }
 
+type KlineFetchProgress = {
+  chunks: number
+  bars: number
+  oldestOpenTime?: number
+  newestOpenTime?: number
+  done: boolean
+  rateLimited?: boolean
+}
+
+const FULL_KLINE_CACHE_PREFIX = 'seacat-backtest-full-kline-v3'
+const FULL_FETCH_META_PREFIX = 'seacat-backtest-fetch-meta-v2'
+
+function getFullKlineCacheKey(symbol: string, interval: string) {
+  return `${FULL_KLINE_CACHE_PREFIX}:${symbol}:${interval}`
+}
+function loadFullKlines(symbol: string, interval: string): Bar[] | null {
+  try {
+    const raw = localStorage.getItem(getFullKlineCacheKey(symbol, interval))
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
+function saveFullKlines(symbol: string, interval: string, bars: Bar[]) {
+  localStorage.setItem(getFullKlineCacheKey(symbol, interval), JSON.stringify(bars))
+}
+function getFetchMetaKey(symbol: string, interval: string) {
+  return `${FULL_FETCH_META_PREFIX}:${symbol}:${interval}`
+}
+function loadFetchMeta(symbol: string, interval: string): { endTime?: number; chunks: number; total: number } | null {
+  try {
+    const raw = localStorage.getItem(getFetchMetaKey(symbol, interval))
+    return raw ? JSON.parse(raw) : null
+  } catch {
+    return null
+  }
+}
+function saveFetchMeta(symbol: string, interval: string, meta: { endTime?: number; chunks: number; total: number }) {
+  localStorage.setItem(getFetchMetaKey(symbol, interval), JSON.stringify(meta))
+}
+function clearFetchMeta(symbol: string, interval: string) {
+  localStorage.removeItem(getFetchMetaKey(symbol, interval))
+}
+function formatTs(ts?: number) {
+  if (!ts) return '--'
+  const d = new Date(ts)
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  const hh = String(d.getHours()).padStart(2, '0')
+  const mm = String(d.getMinutes()).padStart(2, '0')
+  return `${y}-${m}-${day} ${hh}:${mm}`
+}
+function intervalToMs(interval: string) {
+  const map: Record<string, number> = {
+    '1m': 60_000,
+    '5m': 5 * 60_000,
+    '15m': 15 * 60_000,
+    '30m': 30 * 60_000,
+    '1h': 60 * 60_000,
+    '4h': 4 * 60 * 60_000,
+    '1d': 24 * 60 * 60_000,
+    '1W': 7 * 24 * 60 * 60_000,
+  }
+  return map[interval] ?? 60_000
+}
+const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms))
+
 function sanitizeState(input: Partial<IndicatorCenterState> | undefined): IndicatorCenterState {
   const defaults = defaultIndicatorState()
   if (!input) return defaults
@@ -154,51 +224,96 @@ function generateMockBars(count = 120): Bar[] {
   return out
 }
 
-async function fetchFuturesKlines(symbol: string, interval: string, limit = 5000): Promise<Bar[]> {
-  const target = Math.max(100, Math.min(limit, 5000))
+async function fetchAllKlinesIncremental(
+  symbol: string,
+  interval: string,
+  onProgress?: (progress: KlineFetchProgress) => void
+): Promise<Bar[]> {
   const chunkSize = 1000
-  let endTime: number | undefined = undefined
-  let rawRows: any[] = []
+  const fiveYearsMs = 1000 * 60 * 60 * 24 * 365 * 5
+  const barMs = intervalToMs(interval)
+  let existing = loadFullKlines(symbol, interval) || []
+  let meta = loadFetchMeta(symbol, interval)
+  let endTime = meta?.endTime
+  let chunks = meta?.chunks ?? 0
 
-  while (rawRows.length < target) {
-    const remaining = target - rawRows.length
-    const currentLimit = Math.min(chunkSize, remaining)
+  while (true) {
+    if (existing.length > 0) {
+      const approxOldestTime = Date.now() - existing.length * barMs
+      if (Date.now() - approxOldestTime >= fiveYearsMs) {
+        clearFetchMeta(symbol, interval)
+        break
+      }
+    }
+
     const url = new URL('https://fapi.binance.com/fapi/v1/klines')
     url.searchParams.set('symbol', symbol)
     url.searchParams.set('interval', interval)
-    url.searchParams.set('limit', String(currentLimit))
+    url.searchParams.set('limit', String(chunkSize))
     if (typeof endTime === 'number') {
       url.searchParams.set('endTime', String(endTime))
     }
 
     const res = await fetch(url.toString())
+    if (res.status === 429) {
+      onProgress?.({
+        chunks,
+        bars: existing.length,
+        done: false,
+        rateLimited: true,
+      })
+      await sleep(1000)
+      continue
+    }
     if (!res.ok) throw new Error(`Binance API ${res.status}`)
     const raw = await res.json()
-    if (!Array.isArray(raw) || raw.length === 0) break
+    if (!Array.isArray(raw) || raw.length === 0) {
+      clearFetchMeta(symbol, interval)
+      break
+    }
 
-    rawRows = [...raw, ...rawRows]
+    chunks += 1
     const first = raw[0]
+    const last = raw[raw.length - 1]
     const firstOpenTime = Array.isArray(first) ? Number(first[0]) : NaN
+    const lastOpenTime = Array.isArray(last) ? Number(last[0]) : NaN
     if (!Number.isFinite(firstOpenTime)) break
-    endTime = firstOpenTime - 1
 
-    if (raw.length < currentLimit) break
-  }
-
-  const deduped = new Map<number, any>()
-  for (const row of rawRows) {
-    if (Array.isArray(row)) deduped.set(Number(row[0]), row)
-  }
-
-  return Array.from(deduped.values())
-    .sort((a, b) => Number(a[0]) - Number(b[0]))
-    .slice(-target)
-    .map((item: any) => ({
+    const merged = [...raw.map((item: any) => ({
       open: Number(item[1]),
       high: Number(item[2]),
       low: Number(item[3]),
       close: Number(item[4]),
-    }))
+    })), ...existing]
+
+    existing = merged
+    endTime = firstOpenTime - 1
+
+    saveFullKlines(symbol, interval, existing)
+    saveFetchMeta(symbol, interval, { endTime, chunks, total: existing.length })
+
+    onProgress?.({
+      chunks,
+      bars: existing.length,
+      oldestOpenTime: firstOpenTime,
+      newestOpenTime: Number.isFinite(lastOpenTime) ? lastOpenTime : undefined,
+      done: false,
+    })
+
+    if (Date.now() - firstOpenTime >= fiveYearsMs || raw.length < chunkSize) {
+      clearFetchMeta(symbol, interval)
+      break
+    }
+
+    await sleep(700)
+  }
+
+  onProgress?.({
+    chunks,
+    bars: existing.length,
+    done: true,
+  })
+  return existing
 }
 
 function calcMA(values: number[], length: number): Array<number | null> {
@@ -599,6 +714,7 @@ export default function TrainingPage() {
   const [loading, setLoading] = useState(true)
   const [dataError, setDataError] = useState('')
   const [cacheStatus, setCacheStatus] = useState<'none' | 'fresh' | 'stale' | 'remote'>('none')
+  const [fetchProgress, setFetchProgress] = useState<KlineFetchProgress | null>(null)
   const [replayMode, setReplayMode] = useState(true)
   const [isPlaying, setIsPlaying] = useState(false)
   const [replaySpeed, setReplaySpeed] = useState(2)
@@ -631,12 +747,20 @@ export default function TrainingPage() {
 
   useEffect(() => {
     let cancelled = false
-    const cached = loadKlineCache(symbol, interval)
-    const cacheAge = cached ? Date.now() - cached.savedAt : Number.MAX_SAFE_INTEGER
-    const hasFreshCache = !!cached && cacheAge < KLINE_CACHE_TTL_MS
+    const recentCached = loadKlineCache(symbol, interval)
+    const fullCached = loadFullKlines(symbol, interval)
+    const cacheAge = recentCached ? Date.now() - recentCached.savedAt : Number.MAX_SAFE_INTEGER
+    const hasFreshCache = !!recentCached && cacheAge < KLINE_CACHE_TTL_MS
 
-    if (cached?.bars?.length) {
-      setBars(cached.bars)
+    setFetchProgress(null)
+
+    if (fullCached?.length) {
+      setBars(fullCached)
+      setCacheStatus('remote')
+      setLoading(false)
+      setFetchProgress({ chunks: 0, bars: fullCached.length, done: true })
+    } else if (recentCached?.bars?.length) {
+      setBars(recentCached.bars)
       setCacheStatus(hasFreshCache ? 'fresh' : 'stale')
       setLoading(false)
     } else {
@@ -647,21 +771,27 @@ export default function TrainingPage() {
     setDataError('')
     setIsPlaying(false)
 
-    fetchFuturesKlines(symbol, interval, 5000)
+    fetchAllKlinesIncremental(symbol, interval, (progress) => {
+      if (cancelled) return
+      setFetchProgress(progress)
+    })
       .then((nextBars) => {
         if (cancelled) return
-        setBars(nextBars)
-        saveKlineCache(symbol, interval, nextBars)
-        setCacheStatus('remote')
+        if (nextBars.length) {
+          setBars(nextBars)
+          saveKlineCache(symbol, interval, nextBars)
+          saveFullKlines(symbol, interval, nextBars)
+          setCacheStatus('remote')
+        }
         setLoading(false)
       })
       .catch((err) => {
         if (cancelled) return
-        if (!cached?.bars?.length) {
-          setBars(generateMockBars(120))
-          setCacheStatus('none')
+        if (fullCached?.length || recentCached?.bars?.length) {
+          setDataError(`Binance 数据加载受限：${err instanceof Error ? err.message : 'unknown error'}，当前继续使用本地缓存`)
+        } else {
+          setDataError(`Binance 数据加载失败：${err instanceof Error ? err.message : 'unknown error'}`)
         }
-        setDataError(`Binance 数据加载失败，${cached?.bars?.length ? '当前显示本地缓存数据' : '当前显示本地回退数据'}：${err instanceof Error ? err.message : 'unknown error'}`)
         setLoading(false)
       })
 
@@ -670,9 +800,11 @@ export default function TrainingPage() {
 
   useEffect(() => {
     if (!bars.length) return
-    const minStart = Math.min(120, bars.length)
-    const maxStart = Math.max(minStart, bars.length - 80)
-    const next = Math.max(minStart, Math.floor(Math.random() * (maxStart - minStart + 1)) + minStart)
+    const minStart = Math.min(DISPLAY_WINDOW, bars.length)
+    const maxStart = Math.max(minStart, bars.length - DISPLAY_WINDOW - 50)
+    const next = maxStart > minStart
+      ? Math.floor(Math.random() * (maxStart - minStart + 1)) + minStart
+      : minStart
     setVisibleCount(next)
   }, [bars])
 
@@ -703,6 +835,13 @@ export default function TrainingPage() {
 
   const currentPrice = replayBars.length ? replayBars[replayBars.length - 1].close : 0
   const latestBar = replayBars.length ? replayBars[replayBars.length - 1] : null
+  const fetchStatusText = fetchProgress
+    ? fetchProgress.done
+      ? `历史已缓存：${fetchProgress.bars} 根`
+      : `${fetchProgress.rateLimited ? '限流等待中 · ' : ''}拉取中：第 ${fetchProgress.chunks} 批 · ${fetchProgress.bars} 根 · ${formatTs(fetchProgress.oldestOpenTime)} → ${formatTs(fetchProgress.newestOpenTime)}`
+    : cacheStatus === 'remote' && bars.length
+      ? `历史已缓存：${bars.length} 根`
+      : ''
   const visibleStart = replayMode ? Math.max(0, Math.max(1, Math.min(visibleCount, bars.length)) - DISPLAY_WINDOW) : 0
   const visibleTradeRecords = tradeRecords
     .filter((record) => {
@@ -775,9 +914,11 @@ export default function TrainingPage() {
 
   const restartReplay = () => {
     if (!bars.length) return
-    const minStart = Math.min(120, bars.length)
-    const maxStart = Math.max(minStart, bars.length - 80)
-    const next = Math.max(minStart, Math.floor(Math.random() * (maxStart - minStart + 1)) + minStart)
+    const minStart = Math.min(DISPLAY_WINDOW, bars.length)
+    const maxStart = Math.max(minStart, bars.length - DISPLAY_WINDOW - 50)
+    const next = maxStart > minStart
+      ? Math.floor(Math.random() * (maxStart - minStart + 1)) + minStart
+      : minStart
     setVisibleCount(next)
     setIsPlaying(false)
   }
@@ -899,7 +1040,7 @@ export default function TrainingPage() {
           <div className="chart-header stacked compact-chart-header">
             <div className="chart-header-top">
               <div className="chart-title">{symbol} 永续 · {interval}</div>
-              <div className="chart-note">时间轴已隐藏 · v1.2.47 箭头高点偏移与5000根分页版</div>
+              <div className="chart-note">时间轴已隐藏 · v1.2.51 五年增量拉取与断点缓存版</div>
             </div>
 
             <div className="replay-toolbar">
@@ -918,7 +1059,7 @@ export default function TrainingPage() {
                   {replaySpeeds.map((speed) => <option key={speed} value={speed}>{speed}x</option>)}
                 </select>
               </div>
-              <div className="progress-chip">进度：{replayMode ? Math.min(visibleCount, bars.length) : bars.length} / 已加载 {bars.length || 0} 根</div>
+              <div className="progress-chip">进度：{replayMode ? Math.min(visibleCount, bars.length) : bars.length} / 全量历史 {bars.length || 0} 根</div>
             </div>
 
             <div className="trade-ui-panel">
@@ -970,6 +1111,7 @@ export default function TrainingPage() {
               <div className="persist-chip">指标已保存：{symbol}</div>
               <div className={`cache-chip ${cacheStatus}`}>{cacheStatus === 'fresh' ? 'K线缓存命中' : cacheStatus === 'stale' ? 'K线旧缓存' : cacheStatus === 'remote' ? 'K线远端已刷新' : '无缓存'}</div>
             </div>
+            {fetchStatusText ? <div className="fetch-progress-banner">{fetchStatusText}</div> : null}
             {dataError ? <div className="error-banner">{dataError}</div> : null}
           </div>
 
