@@ -1,0 +1,4 @@
+git checkout -b feat/training-fetch-pause-ui
+git add src/pages/Training.tsx
+git commit -m "feat(training): add fetch pause/resume and enhanced progress ui"
+git push origin feat/training-fetch-pause-ui

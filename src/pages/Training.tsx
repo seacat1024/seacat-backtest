@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import IndicatorCenterModal from '../components/indicators/IndicatorCenterModal'
 import type { IndicatorCenterState } from '../components/indicators/types'
 
 type Bar = { open: number; high: number; low: number; close: number }
+
 type HoverData = {
   index: number
   x: number
@@ -49,6 +50,21 @@ type TradeRecord = {
   status: 'open' | 'closed'
 }
 
+type KlineFetchProgress = {
+  chunks: number
+  bars: number
+  oldestOpenTime?: number
+  newestOpenTime?: number
+  done: boolean
+  rateLimited?: boolean
+  paused?: boolean
+}
+
+type FetchControl = {
+  pausedRef: { current: boolean }
+  cancelledRef: { current: boolean }
+}
+
 const intervals = ['1m', '5m', '15m', '15m', '1h', '4h', '1d', '1W']
 const symbols = ['BTCUSDT', 'ETHUSDT']
 const replaySpeeds = [1, 2, 4, 8]
@@ -56,6 +72,7 @@ const STORAGE_KEY = 'seacat-backtest-indicator-profiles-v1'
 const KLINE_CACHE_PREFIX = 'seacat-backtest-kline-cache-v1'
 const KLINE_CACHE_TTL_MS = 1000 * 60 * 15
 const DISPLAY_WINDOW = 140
+const FIVE_YEARS_MS = 1000 * 60 * 60 * 24 * 365 * 5
 
 const defaultIndicatorState = (): IndicatorCenterState => ({
   selectedIds: ['MA', 'EMA', 'RSI', 'MACD'],
@@ -123,21 +140,13 @@ function saveKlineCache(symbol: string, interval: string, bars: Bar[]) {
   localStorage.setItem(getKlineCacheKey(symbol, interval), JSON.stringify(payload))
 }
 
-type KlineFetchProgress = {
-  chunks: number
-  bars: number
-  oldestOpenTime?: number
-  newestOpenTime?: number
-  done: boolean
-  rateLimited?: boolean
-}
-
 const FULL_KLINE_CACHE_PREFIX = 'seacat-backtest-full-kline-v3'
 const FULL_FETCH_META_PREFIX = 'seacat-backtest-fetch-meta-v2'
 
 function getFullKlineCacheKey(symbol: string, interval: string) {
   return `${FULL_KLINE_CACHE_PREFIX}:${symbol}:${interval}`
 }
+
 function loadFullKlines(symbol: string, interval: string): Bar[] | null {
   try {
     const raw = localStorage.getItem(getFullKlineCacheKey(symbol, interval))
@@ -148,12 +157,15 @@ function loadFullKlines(symbol: string, interval: string): Bar[] | null {
     return null
   }
 }
+
 function saveFullKlines(symbol: string, interval: string, bars: Bar[]) {
   localStorage.setItem(getFullKlineCacheKey(symbol, interval), JSON.stringify(bars))
 }
+
 function getFetchMetaKey(symbol: string, interval: string) {
   return `${FULL_FETCH_META_PREFIX}:${symbol}:${interval}`
 }
+
 function loadFetchMeta(symbol: string, interval: string): { endTime?: number; chunks: number; total: number } | null {
   try {
     const raw = localStorage.getItem(getFetchMetaKey(symbol, interval))
@@ -162,12 +174,15 @@ function loadFetchMeta(symbol: string, interval: string): { endTime?: number; ch
     return null
   }
 }
+
 function saveFetchMeta(symbol: string, interval: string, meta: { endTime?: number; chunks: number; total: number }) {
   localStorage.setItem(getFetchMetaKey(symbol, interval), JSON.stringify(meta))
 }
+
 function clearFetchMeta(symbol: string, interval: string) {
   localStorage.removeItem(getFetchMetaKey(symbol, interval))
 }
+
 function formatTs(ts?: number) {
   if (!ts) return '--'
   const d = new Date(ts)
@@ -178,6 +193,7 @@ function formatTs(ts?: number) {
   const mm = String(d.getMinutes()).padStart(2, '0')
   return `${y}-${m}-${day} ${hh}:${mm}`
 }
+
 function intervalToMs(interval: string) {
   const map: Record<string, number> = {
     '1m': 60_000,
@@ -191,6 +207,7 @@ function intervalToMs(interval: string) {
   }
   return map[interval] ?? 60_000
 }
+
 const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms))
 
 function sanitizeState(input: Partial<IndicatorCenterState> | undefined): IndicatorCenterState {
@@ -209,63 +226,82 @@ function sanitizeState(input: Partial<IndicatorCenterState> | undefined): Indica
   }
 }
 
-function generateMockBars(count = 120): Bar[] {
-  const out: Bar[] = []
-  let price = 3200
-  for (let i = 0; i < count; i++) {
-    const drift = (Math.random() - 0.5) * 90
-    const open = price
-    const close = Math.max(100, open + drift)
-    const high = Math.max(open, close) + Math.random() * 20
-    const low = Math.min(open, close) - Math.random() * 20
-    out.push({ open, high, low, close })
-    price = close
+function estimateOldestOpenTimeFromCount(barCount: number, interval: string) {
+  if (!barCount) return undefined
+  return Date.now() - barCount * intervalToMs(interval)
+}
+
+function calcFetchCoverage(oldestOpenTime?: number) {
+  if (!oldestOpenTime) return 0
+  return Math.max(0, Math.min(100, ((Date.now() - oldestOpenTime) / FIVE_YEARS_MS) * 100))
+}
+
+async function waitIfPaused(control?: FetchControl, onProgress?: (progress: KlineFetchProgress) => void, snapshot?: Omit<KlineFetchProgress, 'paused'>) {
+  while (control?.pausedRef.current && !control.cancelledRef.current) {
+    onProgress?.({
+      chunks: snapshot?.chunks ?? 0,
+      bars: snapshot?.bars ?? 0,
+      oldestOpenTime: snapshot?.oldestOpenTime,
+      newestOpenTime: snapshot?.newestOpenTime,
+      done: false,
+      rateLimited: snapshot?.rateLimited,
+      paused: true,
+    })
+    await sleep(180)
   }
-  return out
 }
 
 async function fetchAllKlinesIncremental(
   symbol: string,
   interval: string,
-  onProgress?: (progress: KlineFetchProgress) => void
+  onProgress?: (progress: KlineFetchProgress) => void,
+  control?: FetchControl
 ): Promise<Bar[]> {
   const chunkSize = 1000
-  const fiveYearsMs = 1000 * 60 * 60 * 24 * 365 * 5
   const barMs = intervalToMs(interval)
   let existing = loadFullKlines(symbol, interval) || []
-  let meta = loadFetchMeta(symbol, interval)
+  const meta = loadFetchMeta(symbol, interval)
   let endTime = meta?.endTime
   let chunks = meta?.chunks ?? 0
 
-  while (true) {
-    if (existing.length > 0) {
-      const approxOldestTime = Date.now() - existing.length * barMs
-      if (Date.now() - approxOldestTime >= fiveYearsMs) {
-        clearFetchMeta(symbol, interval)
-        break
-      }
+  while (!control?.cancelledRef.current) {
+    const approxOldestTime = existing.length ? estimateOldestOpenTimeFromCount(existing.length, interval) : undefined
+    if (approxOldestTime && Date.now() - approxOldestTime >= FIVE_YEARS_MS) {
+      clearFetchMeta(symbol, interval)
+      break
     }
+
+    await waitIfPaused(control, onProgress, {
+      chunks,
+      bars: existing.length,
+      oldestOpenTime: approxOldestTime,
+      newestOpenTime: undefined,
+      done: false,
+      rateLimited: false,
+    })
+    if (control?.cancelledRef.current) break
 
     const url = new URL('https://fapi.binance.com/fapi/v1/klines')
     url.searchParams.set('symbol', symbol)
     url.searchParams.set('interval', interval)
     url.searchParams.set('limit', String(chunkSize))
-    if (typeof endTime === 'number') {
-      url.searchParams.set('endTime', String(endTime))
-    }
+    if (typeof endTime === 'number') url.searchParams.set('endTime', String(endTime))
 
     const res = await fetch(url.toString())
     if (res.status === 429) {
       onProgress?.({
         chunks,
         bars: existing.length,
+        oldestOpenTime: approxOldestTime,
         done: false,
         rateLimited: true,
       })
       await sleep(1000)
       continue
     }
+
     if (!res.ok) throw new Error(`Binance API ${res.status}`)
+
     const raw = await res.json()
     if (!Array.isArray(raw) || raw.length === 0) {
       clearFetchMeta(symbol, interval)
@@ -279,12 +315,15 @@ async function fetchAllKlinesIncremental(
     const lastOpenTime = Array.isArray(last) ? Number(last[0]) : NaN
     if (!Number.isFinite(firstOpenTime)) break
 
-    const merged = [...raw.map((item: any) => ({
-      open: Number(item[1]),
-      high: Number(item[2]),
-      low: Number(item[3]),
-      close: Number(item[4]),
-    })), ...existing]
+    const merged = [
+      ...raw.map((item: any) => ({
+        open: Number(item[1]),
+        high: Number(item[2]),
+        low: Number(item[3]),
+        close: Number(item[4]),
+      })),
+      ...existing,
+    ]
 
     existing = merged
     endTime = firstOpenTime - 1
@@ -298,12 +337,23 @@ async function fetchAllKlinesIncremental(
       oldestOpenTime: firstOpenTime,
       newestOpenTime: Number.isFinite(lastOpenTime) ? lastOpenTime : undefined,
       done: false,
+      paused: false,
     })
 
-    if (Date.now() - firstOpenTime >= fiveYearsMs || raw.length < chunkSize) {
+    if (Date.now() - firstOpenTime >= FIVE_YEARS_MS || raw.length < chunkSize) {
       clearFetchMeta(symbol, interval)
       break
     }
+
+    await waitIfPaused(control, onProgress, {
+      chunks,
+      bars: existing.length,
+      oldestOpenTime: firstOpenTime,
+      newestOpenTime: Number.isFinite(lastOpenTime) ? lastOpenTime : undefined,
+      done: false,
+      rateLimited: false,
+    })
+    if (control?.cancelledRef.current) break
 
     await sleep(700)
   }
@@ -311,8 +361,11 @@ async function fetchAllKlinesIncremental(
   onProgress?.({
     chunks,
     bars: existing.length,
+    oldestOpenTime: estimateOldestOpenTimeFromCount(existing.length, interval),
     done: true,
+    paused: false,
   })
+
   return existing
 }
 
@@ -335,8 +388,7 @@ function calcEMA(values: number[], length: number): Array<number | null> {
       return
     }
     if (ema === null) {
-      const seed = values.slice(i + 1 - length, i + 1).reduce((a, b) => a + b, 0) / length
-      ema = seed
+      ema = values.slice(i + 1 - length, i + 1).reduce((a, b) => a + b, 0) / length
     } else {
       ema = value * k + ema * (1 - k)
     }
@@ -373,9 +425,11 @@ function calcMACD(values: number[], fast = 12, slow = 26, signalPeriod = 9) {
   const emaFast = calcEMA(values, fast)
   const emaSlow = calcEMA(values, slow)
   const macd: Array<number | null> = values.map((_, i) => (
-    typeof emaFast[i] === 'number' && typeof emaSlow[i] === 'number' ? (emaFast[i] as number) - (emaSlow[i] as number) : null
+    typeof emaFast[i] === 'number' && typeof emaSlow[i] === 'number'
+      ? (emaFast[i] as number) - (emaSlow[i] as number)
+      : null
   ))
-  const macdClean = macd.map(v => v ?? 0)
+  const macdClean = macd.map((v) => v ?? 0)
   const signalBase = calcEMA(macdClean, signalPeriod)
   const signal = macd.map((v, i) => (v === null || signalBase[i] === null ? null : signalBase[i]))
   const hist = macd.map((v, i) => (v === null || signal[i] === null ? null : v - (signal[i] as number)))
@@ -383,11 +437,145 @@ function calcMACD(values: number[], fast = 12, slow = 26, signalPeriod = 9) {
 }
 
 function buildPolylinePoints(series: Array<number | null>, scaleY: (v: number) => number, xForIndex: (i: number) => number): string {
-  return series.map((value, i) => value === null ? null : `${xForIndex(i)},${scaleY(value)}`).filter(Boolean).join(' ')
+  return series
+    .map((value, i) => (value === null ? null : `${xForIndex(i)},${scaleY(value)}`))
+    .filter(Boolean)
+    .join(' ')
 }
 
 function formatPnl(v: number) {
   return `${v >= 0 ? '+' : ''}${v.toFixed(2)}`
+}
+
+function FetchProgressPanel({
+  loading,
+  fetchProgress,
+  bars,
+  isPaused,
+  onTogglePause,
+  cacheStatus,
+}: {
+  loading: boolean
+  fetchProgress: KlineFetchProgress | null
+  bars: Bar[]
+  isPaused: boolean
+  onTogglePause: () => void
+  cacheStatus: 'none' | 'fresh' | 'stale' | 'remote'
+}) {
+  const fallbackOldest = estimateOldestOpenTimeFromCount(bars.length, '15m')
+  const oldest = fetchProgress?.oldestOpenTime ?? fallbackOldest
+  const percent = fetchProgress?.done ? 100 : calcFetchCoverage(oldest)
+  const bannerTitle = fetchProgress?.done
+    ? '历史数据已完成缓存'
+    : isPaused
+      ? '历史拉取已暂停'
+      : loading
+        ? '正在拉取 Binance 历史数据'
+        : '本地缓存可用'
+  const stateLabel = fetchProgress?.done
+    ? '完成'
+    : fetchProgress?.rateLimited
+      ? '限流重试'
+      : isPaused
+        ? '已暂停'
+        : '拉取中'
+
+  return (
+    <div
+      className="fetch-progress-banner"
+      style={{
+        marginTop: 10,
+        border: '1px solid rgba(240,185,11,0.24)',
+        background: 'linear-gradient(180deg, rgba(17,24,39,0.94), rgba(15,23,42,0.94))',
+        borderRadius: 12,
+        padding: 12,
+        boxShadow: '0 10px 30px rgba(0,0,0,0.18)',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+        <div>
+          <div style={{ color: '#f8fafc', fontSize: 15, fontWeight: 700 }}>{bannerTitle}</div>
+          <div style={{ color: '#94a3b8', fontSize: 12, marginTop: 4 }}>
+            五年历史增量拉取 · 断点续传 · 本地全量缓存
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <span
+            style={{
+              padding: '4px 10px',
+              borderRadius: 999,
+              background: isPaused ? 'rgba(248,113,113,0.12)' : 'rgba(34,197,94,0.12)',
+              color: isPaused ? '#fca5a5' : '#86efac',
+              border: `1px solid ${isPaused ? 'rgba(248,113,113,0.32)' : 'rgba(34,197,94,0.28)'}`,
+              fontSize: 12,
+              fontWeight: 700,
+            }}
+          >
+            {stateLabel}
+          </span>
+          <span
+            style={{
+              padding: '4px 10px',
+              borderRadius: 999,
+              background: 'rgba(96,165,250,0.10)',
+              color: '#bfdbfe',
+              border: '1px solid rgba(96,165,250,0.25)',
+              fontSize: 12,
+              fontWeight: 700,
+            }}
+          >
+            {cacheStatus === 'fresh' ? '缓存命中' : cacheStatus === 'stale' ? '旧缓存' : cacheStatus === 'remote' ? '远端已刷新' : '无缓存'}
+          </span>
+          <button
+            className="btn compact-btn"
+            type="button"
+            onClick={onTogglePause}
+            disabled={fetchProgress?.done || (!loading && !fetchProgress)}
+            style={{
+              minWidth: 108,
+              background: isPaused ? '#0ECB81' : '#F59E0B',
+              color: '#0b0e11',
+              fontWeight: 700,
+              border: 'none',
+            }}
+          >
+            {isPaused ? '恢复拉取' : '暂停拉取'}
+          </button>
+        </div>
+      </div>
+
+      <div style={{ marginTop: 12 }}>
+        <div
+          style={{
+            position: 'relative',
+            height: 12,
+            borderRadius: 999,
+            background: 'rgba(255,255,255,0.08)',
+            overflow: 'hidden',
+          }}
+        >
+          <div
+            style={{
+              width: `${percent}%`,
+              height: '100%',
+              borderRadius: 999,
+              background: isPaused
+                ? 'linear-gradient(90deg, #f59e0b, #fbbf24)'
+                : 'linear-gradient(90deg, #0ea5e9, #22c55e)',
+              transition: 'width 220ms ease',
+            }}
+          />
+        </div>
+        <div style={{ marginTop: 6, color: '#e2e8f0', fontSize: 12, display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+          <span>覆盖进度：{percent.toFixed(1)}%</span>
+          <span>批次：{fetchProgress?.chunks ?? 0}</span>
+          <span>已缓存：{fetchProgress?.bars ?? bars.length} 根</span>
+          <span>最老：{formatTs(fetchProgress?.oldestOpenTime)}</span>
+          <span>最新：{formatTs(fetchProgress?.newestOpenTime)}</span>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 function IndicatorSubcharts({
@@ -414,7 +602,7 @@ function IndicatorSubcharts({
   const rsiBottom = 122
   const scaleRsi = (v: number) => rsiBottom - (v / 100) * (rsiBottom - rsiTop)
   const macdVals = [...macd, ...signal, ...hist].filter((v): v is number => typeof v === 'number')
-  const macdAbsRaw = macdVals.length ? Math.max(...macdVals.map(v => Math.abs(v))) : 1
+  const macdAbsRaw = macdVals.length ? Math.max(...macdVals.map((v) => Math.abs(v))) : 1
   const macdAbs = Math.max(macdAbsRaw * 1.25, 0.5)
   const macdTop = 18
   const macdBottom = 122
@@ -437,9 +625,9 @@ function IndicatorSubcharts({
             <line x1="0" y1={scaleRsi(70)} x2={width} y2={scaleRsi(70)} stroke="#475569" strokeDasharray="4 4" />
             <line x1="0" y1={scaleRsi(50)} x2={width} y2={scaleRsi(50)} stroke="#334155" strokeDasharray="3 5" />
             <line x1="0" y1={scaleRsi(15)} x2={width} y2={scaleRsi(15)} stroke="#475569" strokeDasharray="4 4" />
-            <text x="6" y={scaleRsi(70)-4} fill="#94a3b8" fontSize="10">70</text>
-            <text x="6" y={scaleRsi(50)-4} fill="#64748b" fontSize="10">50</text>
-            <text x="6" y={scaleRsi(15)-4} fill="#94a3b8" fontSize="10">15</text>
+            <text x="6" y={scaleRsi(70) - 4} fill="#94a3b8" fontSize="10">70</text>
+            <text x="6" y={scaleRsi(50) - 4} fill="#64748b" fontSize="10">50</text>
+            <text x="6" y={scaleRsi(15) - 4} fill="#94a3b8" fontSize="10">15</text>
             <polyline points={buildPolylinePoints(rsi, scaleRsi, xForIndex)} fill="none" stroke="#38bdf8" strokeWidth="2" />
             {hoverIndex !== null ? <line x1={xForIndex(hoverIndex)} y1="0" x2={xForIndex(hoverIndex)} y2="140" stroke="#94a3b8" strokeDasharray="4 4" /> : null}
           </svg>
@@ -463,9 +651,9 @@ function IndicatorSubcharts({
             <line x1="0" y1={scaleMacd(macdAbs)} x2={width} y2={scaleMacd(macdAbs)} stroke="#1e293b" strokeDasharray="3 5" />
             <line x1="0" y1={scaleMacd(0)} x2={width} y2={scaleMacd(0)} stroke="#334155" />
             <line x1="0" y1={scaleMacd(-macdAbs)} x2={width} y2={scaleMacd(-macdAbs)} stroke="#1e293b" strokeDasharray="3 5" />
-            <text x="6" y={scaleMacd(macdAbs)-4} fill="#64748b" fontSize="10">{fmt(macdAbs)}</text>
-            <text x="6" y={scaleMacd(0)-4} fill="#94a3b8" fontSize="10">0</text>
-            <text x="6" y={scaleMacd(-macdAbs)-4} fill="#64748b" fontSize="10">{fmt(-macdAbs)}</text>
+            <text x="6" y={scaleMacd(macdAbs) - 4} fill="#64748b" fontSize="10">{fmt(macdAbs)}</text>
+            <text x="6" y={scaleMacd(0) - 4} fill="#94a3b8" fontSize="10">0</text>
+            <text x="6" y={scaleMacd(-macdAbs) - 4} fill="#64748b" fontSize="10">{fmt(-macdAbs)}</text>
             {hist.map((v, i) => {
               if (v === null) return null
               const x = xForIndex(i) - 2
@@ -516,7 +704,12 @@ function KlineChart({
   const allSeries = [...maSeries, ...emaSeries]
   const allHighs = bars.map((b) => b.high)
   const allLows = bars.map((b) => b.low)
-  allSeries.forEach((series) => series.values.forEach((v) => { if (typeof v === 'number') { allHighs.push(v); allLows.push(v) } }))
+  allSeries.forEach((series) => series.values.forEach((v) => {
+    if (typeof v === 'number') {
+      allHighs.push(v)
+      allLows.push(v)
+    }
+  }))
   tradeRecords.forEach((t) => {
     allHighs.push(t.entryPrice)
     allLows.push(t.entryPrice)
@@ -551,8 +744,13 @@ function KlineChart({
             const py = ((e.clientY - rect.top) / rect.height) * height
             const idx = Math.max(0, Math.min(bars.length - 1, Math.round((px - padLeft - 3) / candleGap)))
             const bar = bars[idx]
-            const maValues = maSeries.map((s) => ({ label: `MA(${s.length})`, value: s.values[idx] })).filter((x): x is { label: string; value: number } => typeof x.value === 'number')
-            const emaValues = emaSeries.map((s) => ({ label: `EMA(${s.length})`, value: s.values[idx] })).filter((x): x is { label: string; value: number } => typeof x.value === 'number')
+            const maValues = maSeries
+              .map((s) => ({ label: `MA(${s.length})`, value: s.values[idx] }))
+              .filter((x): x is { label: string; value: number } => typeof x.value === 'number')
+            const emaValues = emaSeries
+              .map((s) => ({ label: `EMA(${s.length})`, value: s.values[idx] }))
+              .filter((x): x is { label: string; value: number } => typeof x.value === 'number')
+
             setHover({
               index: idx,
               x: xForIndex(idx),
@@ -560,10 +758,10 @@ function KlineChart({
               bar,
               maValues,
               emaValues,
-              rsi: typeof rsi[idx] === 'number' ? rsi[idx] as number : undefined,
-              macd: typeof macd[idx] === 'number' ? macd[idx] as number : undefined,
-              signal: typeof signal[idx] === 'number' ? signal[idx] as number : undefined,
-              hist: typeof hist[idx] === 'number' ? hist[idx] as number : undefined,
+              rsi: typeof rsi[idx] === 'number' ? (rsi[idx] as number) : undefined,
+              macd: typeof macd[idx] === 'number' ? (macd[idx] as number) : undefined,
+              signal: typeof signal[idx] === 'number' ? (signal[idx] as number) : undefined,
+              hist: typeof hist[idx] === 'number' ? (hist[idx] as number) : undefined,
             })
           }}
           onMouseLeave={() => setHover(null)}
@@ -643,7 +841,7 @@ function KlineChart({
             const entryX = xForIndex(record.entryBarIndex)
             const entryAnchorY = scaleY(entryBar.high) - 15
             const openTextY = entryAnchorY - 18
-            const openTriangle = `${entryX},${entryAnchorY - 14} ${entryX-8},${entryAnchorY + 4} ${entryX+8},${entryAnchorY + 4}`
+            const openTriangle = `${entryX},${entryAnchorY - 14} ${entryX - 8},${entryAnchorY + 4} ${entryX + 8},${entryAnchorY + 4}`
             const exitX = record.status === 'closed' && typeof record.exitBarIndex === 'number' ? xForIndex(record.exitBarIndex) : null
             const exitBar = record.status === 'closed' && typeof record.exitBarIndex === 'number' ? bars[record.exitBarIndex] : null
             const exitAnchorY = exitBar ? scaleY(exitBar.high) - 15 : null
@@ -656,7 +854,7 @@ function KlineChart({
                 </text>
                 {exitX !== null && exitAnchorY !== null && exitTextY !== null ? (
                   <>
-                    <polygon points={`${exitX},${exitAnchorY - 14} ${exitX-8},${exitAnchorY + 4} ${exitX+8},${exitAnchorY + 4}`} fill="#f0b90b" opacity="0.95" />
+                    <polygon points={`${exitX},${exitAnchorY - 14} ${exitX - 8},${exitAnchorY + 4} ${exitX + 8},${exitAnchorY + 4}`} fill="#f0b90b" opacity="0.95" />
                     <text x={exitX + 12} y={exitTextY} fill="#f0b90b" fontSize="12" fontWeight="700">平仓</text>
                   </>
                 ) : null}
@@ -709,12 +907,15 @@ export default function TrainingPage() {
   const [interval, setInterval] = useState('15m')
   const [open, setOpen] = useState(false)
   const [profiles, setProfiles] = useState<Record<string, IndicatorCenterState>>(() => loadProfiles())
-  const [centerState, setCenterState] = useState<IndicatorCenterState>(() => sanitizeState(loadProfiles()['BTCUSDT']))
+  const [centerState, setCenterState] = useState<IndicatorCenterState>(() => sanitizeState(loadProfiles().BTCUSDT))
   const [bars, setBars] = useState<Bar[]>([])
   const [loading, setLoading] = useState(true)
   const [dataError, setDataError] = useState('')
   const [cacheStatus, setCacheStatus] = useState<'none' | 'fresh' | 'stale' | 'remote'>('none')
   const [fetchProgress, setFetchProgress] = useState<KlineFetchProgress | null>(null)
+  const [fetchPaused, setFetchPaused] = useState(false)
+  const fetchPausedRef = useRef(false)
+  const fetchCancelledRef = useRef(false)
   const [replayMode, setReplayMode] = useState(true)
   const [isPlaying, setIsPlaying] = useState(false)
   const [replaySpeed, setReplaySpeed] = useState(2)
@@ -732,7 +933,7 @@ export default function TrainingPage() {
   useEffect(() => {
     const loaded = sanitizeState(profiles[symbol])
     setCenterState(loaded)
-  }, [symbol])
+  }, [profiles, symbol])
 
   const handleIndicatorSave = (next: IndicatorCenterState) => {
     const safe = sanitizeState(next)
@@ -746,7 +947,15 @@ export default function TrainingPage() {
   }
 
   useEffect(() => {
+    fetchPausedRef.current = fetchPaused
+  }, [fetchPaused])
+
+  useEffect(() => {
     let cancelled = false
+    fetchCancelledRef.current = false
+    fetchPausedRef.current = false
+    setFetchPaused(false)
+
     const recentCached = loadKlineCache(symbol, interval)
     const fullCached = loadFullKlines(symbol, interval)
     const cacheAge = recentCached ? Date.now() - recentCached.savedAt : Number.MAX_SAFE_INTEGER
@@ -755,10 +964,16 @@ export default function TrainingPage() {
     setFetchProgress(null)
 
     if (fullCached?.length) {
+      const approxOldestTime = estimateOldestOpenTimeFromCount(fullCached.length, interval)
       setBars(fullCached)
       setCacheStatus('remote')
       setLoading(false)
-      setFetchProgress({ chunks: 0, bars: fullCached.length, done: true })
+      setFetchProgress({
+        chunks: loadFetchMeta(symbol, interval)?.chunks ?? 0,
+        bars: fullCached.length,
+        oldestOpenTime: approxOldestTime,
+        done: calcFetchCoverage(approxOldestTime) >= 99.9,
+      })
     } else if (recentCached?.bars?.length) {
       setBars(recentCached.bars)
       setCacheStatus(hasFreshCache ? 'fresh' : 'stale')
@@ -771,10 +986,18 @@ export default function TrainingPage() {
     setDataError('')
     setIsPlaying(false)
 
-    fetchAllKlinesIncremental(symbol, interval, (progress) => {
-      if (cancelled) return
-      setFetchProgress(progress)
-    })
+    fetchAllKlinesIncremental(
+      symbol,
+      interval,
+      (progress) => {
+        if (cancelled) return
+        setFetchProgress(progress)
+      },
+      {
+        pausedRef: fetchPausedRef,
+        cancelledRef: fetchCancelledRef,
+      }
+    )
       .then((nextBars) => {
         if (cancelled) return
         if (nextBars.length) {
@@ -795,7 +1018,10 @@ export default function TrainingPage() {
         setLoading(false)
       })
 
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+      fetchCancelledRef.current = true
+    }
   }, [symbol, interval])
 
   useEffect(() => {
@@ -835,13 +1061,6 @@ export default function TrainingPage() {
 
   const currentPrice = replayBars.length ? replayBars[replayBars.length - 1].close : 0
   const latestBar = replayBars.length ? replayBars[replayBars.length - 1] : null
-  const fetchStatusText = fetchProgress
-    ? fetchProgress.done
-      ? `历史已缓存：${fetchProgress.bars} 根`
-      : `${fetchProgress.rateLimited ? '限流等待中 · ' : ''}拉取中：第 ${fetchProgress.chunks} 批 · ${fetchProgress.bars} 根 · ${formatTs(fetchProgress.oldestOpenTime)} → ${formatTs(fetchProgress.newestOpenTime)}`
-    : cacheStatus === 'remote' && bars.length
-      ? `历史已缓存：${bars.length} 根`
-      : ''
   const visibleStart = replayMode ? Math.max(0, Math.max(1, Math.min(visibleCount, bars.length)) - DISPLAY_WINDOW) : 0
   const visibleTradeRecords = tradeRecords
     .filter((record) => {
@@ -864,29 +1083,30 @@ export default function TrainingPage() {
 
   const activeMAs = centerState.selectedIds.includes('MA') ? centerState.maLines.filter((line) => line.length > 0) : []
   const activeEMAs = centerState.selectedIds.includes('EMA') ? centerState.emaLines.filter((line) => line.length > 0) : []
-  const closedTrades = tradeRecords.filter(t => t.status === 'closed')
+  const closedTrades = tradeRecords.filter((t) => t.status === 'closed')
   const totalTrades = closedTrades.length
-  const wins = closedTrades.filter(t => (t.pnl ?? 0) > 0)
-  const losses = closedTrades.filter(t => (t.pnl ?? 0) <= 0)
+  const wins = closedTrades.filter((t) => (t.pnl ?? 0) > 0)
+  const losses = closedTrades.filter((t) => (t.pnl ?? 0) <= 0)
 
   const winRate = totalTrades ? (wins.length / totalTrades * 100).toFixed(1) : 0
   const totalPnl = closedTrades.reduce((a, b) => a + (b.pnl ?? 0), 0)
-  const avgPnl = totalTrades ? (totalPnl / totalTrades) : 0
-
-  const avgWin = wins.length ? wins.reduce((a,b)=>a+(b.pnl??0),0)/wins.length : 0
-  const avgLoss = losses.length ? losses.reduce((a,b)=>a+(b.pnl??0),0)/losses.length : 0
+  const avgPnl = totalTrades ? totalPnl / totalTrades : 0
+  const avgWin = wins.length ? wins.reduce((a, b) => a + (b.pnl ?? 0), 0) / wins.length : 0
+  const avgLoss = losses.length ? losses.reduce((a, b) => a + (b.pnl ?? 0), 0) / losses.length : 0
   const rr = avgLoss !== 0 ? (avgWin / Math.abs(avgLoss)).toFixed(2) : 0
+
   const equityCurve = closedTrades.reduce<number[]>((acc, trade) => {
     const prev = acc.length ? acc[acc.length - 1] : initialBalance
     acc.push(prev + (trade.pnl ?? 0))
     return acc
   }, [])
+
   let peak = initialBalance
   let maxDrawdown = 0
   let currentDrawdown = 0
-  equityCurve.forEach((equity) => {
-    if (equity > peak) peak = equity
-    const dd = peak - equity
+  equityCurve.forEach((value) => {
+    if (value > peak) peak = value
+    const dd = peak - value
     if (dd > maxDrawdown) maxDrawdown = dd
     currentDrawdown = dd
   })
@@ -910,7 +1130,6 @@ export default function TrainingPage() {
     if (winStreak > maxWinStreak) maxWinStreak = winStreak
     if (lossStreak > maxLossStreak) maxLossStreak = lossStreak
   })
-
 
   const restartReplay = () => {
     if (!bars.length) return
@@ -1010,6 +1229,11 @@ export default function TrainingPage() {
     }
   }, [latestBar, position, visibleCount])
 
+  const toggleFetchPause = () => {
+    if (fetchProgress?.done) return
+    setFetchPaused((prev) => !prev)
+  }
+
   return (
     <div className="app-shell">
       <header className="topbar compact-top">
@@ -1040,8 +1264,17 @@ export default function TrainingPage() {
           <div className="chart-header stacked compact-chart-header">
             <div className="chart-header-top">
               <div className="chart-title">{symbol} 永续 · {interval}</div>
-              <div className="chart-note">时间轴已隐藏 · v1.2.51 五年增量拉取与断点缓存版</div>
+              <div className="chart-note">时间轴已隐藏 · v1.2.51 第一阶段收尾版（去 mock / 暂停恢复 / 强化进度 UI）</div>
             </div>
+
+            <FetchProgressPanel
+              loading={loading}
+              fetchProgress={fetchProgress}
+              bars={bars}
+              isPaused={fetchPaused}
+              onTogglePause={toggleFetchPause}
+              cacheStatus={cacheStatus}
+            />
 
             <div className="replay-toolbar">
               <button className="btn compact-btn" onClick={() => setIsPlaying((prev) => !prev)} disabled={!replayMode || !bars.length}>
@@ -1111,7 +1344,6 @@ export default function TrainingPage() {
               <div className="persist-chip">指标已保存：{symbol}</div>
               <div className={`cache-chip ${cacheStatus}`}>{cacheStatus === 'fresh' ? 'K线缓存命中' : cacheStatus === 'stale' ? 'K线旧缓存' : cacheStatus === 'remote' ? 'K线远端已刷新' : '无缓存'}</div>
             </div>
-            {fetchStatusText ? <div className="fetch-progress-banner">{fetchStatusText}</div> : null}
             {dataError ? <div className="error-banner">{dataError}</div> : null}
           </div>
 
@@ -1119,7 +1351,6 @@ export default function TrainingPage() {
             <KlineChart bars={replayBars} state={centerState} loading={loading} tradeRecords={visibleTradeRecords} currentPrice={currentPrice} />
           </div>
 
-          
           <div className="stats-panel">
             <div className="stat-card"><span>交易</span><strong>{totalTrades}</strong></div>
             <div className="stat-card"><span>胜率</span><strong>{winRate}%</strong></div>
@@ -1131,7 +1362,8 @@ export default function TrainingPage() {
             <div className="stat-card"><span>最大连胜</span><strong>{maxWinStreak}</strong></div>
             <div className="stat-card"><span>最大连亏</span><strong>{maxLossStreak}</strong></div>
           </div>
-<div className="records-panel">
+
+          <div className="records-panel">
             <div className="records-title">交易记录</div>
             <div className="records-list">
               {tradeRecords.length === 0 ? <div className="record-empty">暂无交易记录</div> : tradeRecords.slice().reverse().map((record) => (
