@@ -616,15 +616,18 @@ export default function TrainingPage() {
   useEffect(() => {
     const loaded = sanitizeState(profiles[symbol])
     setCenterState(loaded)
-  }, [symbol, profiles])
+  }, [symbol])
 
-  useEffect(() => {
+  const handleIndicatorSave = (next: IndicatorCenterState) => {
+    const safe = sanitizeState(next)
+    setCenterState(safe)
     setProfiles((prev) => {
-      const next = { ...prev, [symbol]: centerState }
-      saveProfiles(next)
-      return next
+      const updated = { ...prev, [symbol]: safe }
+      saveProfiles(updated)
+      return updated
     })
-  }, [symbol, centerState])
+    setOpen(false)
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -896,7 +899,7 @@ export default function TrainingPage() {
           <div className="chart-header stacked compact-chart-header">
             <div className="chart-header-top">
               <div className="chart-title">{symbol} 永续 · {interval}</div>
-              <div className="chart-note">时间轴已隐藏 · v1.2.39 箭头高点偏移与5000根分页版</div>
+              <div className="chart-note">时间轴已隐藏 · v1.2.47 箭头高点偏移与5000根分页版</div>
             </div>
 
             <div className="replay-toolbar">
@@ -1008,7 +1011,7 @@ export default function TrainingPage() {
         open={open}
         value={centerState}
         onClose={() => setOpen(false)}
-        onSave={(next) => { setCenterState(sanitizeState(next)); setOpen(false) }}
+        onSave={handleIndicatorSave}
       />
     </div>
   )

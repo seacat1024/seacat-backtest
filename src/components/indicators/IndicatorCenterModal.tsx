@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { IndicatorCenterState, IndicatorLibraryItem, MultiLineConfig } from './types'
 
 const COLORS = ['#ef4444', '#22c55e', '#60a5fa', '#a78bfa', '#ffffff', '#f0b90b', '#f472b6', '#38bdf8']
@@ -100,6 +100,12 @@ export default function IndicatorCenterModal({ open, value, onClose, onSave }: P
   const [leftTab, setLeftTab] = useState<'all' | 'selected'>('all')
   const [activeId, setActiveId] = useState<string>('MA')
   const [draft, setDraft] = useState<IndicatorCenterState>(value)
+
+  useEffect(() => {
+    if (open) {
+      setDraft(value)
+    }
+  }, [open, value])
 
   const visibleList = useMemo(
     () => leftTab === 'all' ? LIBRARY : LIBRARY.filter((item) => draft.selectedIds.includes(item.id)),
