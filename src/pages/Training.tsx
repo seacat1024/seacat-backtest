@@ -307,6 +307,8 @@ function IndicatorSubcharts({
   const scaleMacd = (v: number) => macdMid - (v / macdAbs) * ((macdBottom - macdTop) / 2 - 6)
   const fmt = (n: number) => n.toFixed(2)
 
+  if (!showRsi && !showMacd) return null
+
   return (
     <div className="subcharts">
       {showRsi ? (
@@ -572,15 +574,17 @@ function KlineChart({
         ) : null}
       </div>
 
-      <IndicatorSubcharts
-        closes={closes}
-        xForIndex={xForIndex}
-        hoverIndex={hover ? hover.index : null}
-        rsiPeriod={state.rsiPeriod}
-        macdConfig={state.macdConfig}
-        showRsi={state.selectedIds.includes('RSI')}
-        showMacd={state.selectedIds.includes('MACD')}
-      />
+      {(state.selectedIds.includes('RSI') || state.selectedIds.includes('MACD')) ? (
+        <IndicatorSubcharts
+          closes={closes}
+          xForIndex={xForIndex}
+          hoverIndex={hover ? hover.index : null}
+          rsiPeriod={state.rsiPeriod}
+          macdConfig={state.macdConfig}
+          showRsi={state.selectedIds.includes('RSI')}
+          showMacd={state.selectedIds.includes('MACD')}
+        />
+      ) : null}
     </>
   )
 }
@@ -718,6 +722,53 @@ export default function TrainingPage() {
 
   const activeMAs = centerState.selectedIds.includes('MA') ? centerState.maLines.filter((line) => line.length > 0) : []
   const activeEMAs = centerState.selectedIds.includes('EMA') ? centerState.emaLines.filter((line) => line.length > 0) : []
+  const closedTrades = tradeRecords.filter(t => t.status === 'closed')
+  const totalTrades = closedTrades.length
+  const wins = closedTrades.filter(t => (t.pnl ?? 0) > 0)
+  const losses = closedTrades.filter(t => (t.pnl ?? 0) <= 0)
+
+  const winRate = totalTrades ? (wins.length / totalTrades * 100).toFixed(1) : 0
+  const totalPnl = closedTrades.reduce((a, b) => a + (b.pnl ?? 0), 0)
+  const avgPnl = totalTrades ? (totalPnl / totalTrades) : 0
+
+  const avgWin = wins.length ? wins.reduce((a,b)=>a+(b.pnl??0),0)/wins.length : 0
+  const avgLoss = losses.length ? losses.reduce((a,b)=>a+(b.pnl??0),0)/losses.length : 0
+  const rr = avgLoss !== 0 ? (avgWin / Math.abs(avgLoss)).toFixed(2) : 0
+  const equityCurve = closedTrades.reduce<number[]>((acc, trade) => {
+    const prev = acc.length ? acc[acc.length - 1] : initialBalance
+    acc.push(prev + (trade.pnl ?? 0))
+    return acc
+  }, [])
+  let peak = initialBalance
+  let maxDrawdown = 0
+  let currentDrawdown = 0
+  equityCurve.forEach((equity) => {
+    if (equity > peak) peak = equity
+    const dd = peak - equity
+    if (dd > maxDrawdown) maxDrawdown = dd
+    currentDrawdown = dd
+  })
+
+  let maxWinStreak = 0
+  let maxLossStreak = 0
+  let winStreak = 0
+  let lossStreak = 0
+  closedTrades.forEach((trade) => {
+    const pnl = trade.pnl ?? 0
+    if (pnl > 0) {
+      winStreak += 1
+      lossStreak = 0
+    } else if (pnl < 0) {
+      lossStreak += 1
+      winStreak = 0
+    } else {
+      winStreak = 0
+      lossStreak = 0
+    }
+    if (winStreak > maxWinStreak) maxWinStreak = winStreak
+    if (lossStreak > maxLossStreak) maxLossStreak = lossStreak
+  })
+
 
   const restartReplay = () => {
     if (!bars.length) return
@@ -845,7 +896,7 @@ export default function TrainingPage() {
           <div className="chart-header stacked compact-chart-header">
             <div className="chart-header-top">
               <div className="chart-title">{symbol} 永续 · {interval}</div>
-              <div className="chart-note">时间轴已隐藏 · v1.2.33 箭头高点偏移与5000根分页版</div>
+              <div className="chart-note">时间轴已隐藏 · v1.2.39 箭头高点偏移与5000根分页版</div>
             </div>
 
             <div className="replay-toolbar">
@@ -923,7 +974,19 @@ export default function TrainingPage() {
             <KlineChart bars={replayBars} state={centerState} loading={loading} tradeRecords={visibleTradeRecords} currentPrice={currentPrice} />
           </div>
 
-          <div className="records-panel">
+          
+          <div className="stats-panel">
+            <div className="stat-card"><span>交易</span><strong>{totalTrades}</strong></div>
+            <div className="stat-card"><span>胜率</span><strong>{winRate}%</strong></div>
+            <div className="stat-card"><span>总盈亏</span><strong>{totalPnl.toFixed(2)}</strong></div>
+            <div className="stat-card"><span>平均</span><strong>{avgPnl.toFixed(2)}</strong></div>
+            <div className="stat-card"><span>盈亏比</span><strong>{rr}</strong></div>
+            <div className="stat-card"><span>最大回撤</span><strong>{maxDrawdown.toFixed(2)}</strong></div>
+            <div className="stat-card"><span>当前回撤</span><strong>{currentDrawdown.toFixed(2)}</strong></div>
+            <div className="stat-card"><span>最大连胜</span><strong>{maxWinStreak}</strong></div>
+            <div className="stat-card"><span>最大连亏</span><strong>{maxLossStreak}</strong></div>
+          </div>
+<div className="records-panel">
             <div className="records-title">交易记录</div>
             <div className="records-list">
               {tradeRecords.length === 0 ? <div className="record-empty">暂无交易记录</div> : tradeRecords.slice().reverse().map((record) => (
