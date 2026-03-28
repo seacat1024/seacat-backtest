@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import IndicatorCenterModal from '../components/indicators/IndicatorCenterModal'
 import type { IndicatorCenterState } from '../components/indicators/types'
 
-type Bar = { open: number; high: number; low: number; close: number }
+type Bar = { openTime: number; open: number; high: number; low: number; close: number }
 
 type HoverData = {
   index: number
@@ -30,6 +30,7 @@ type PositionState = {
   qty: number
   entry: number
   entryBarIndex: number
+  entryOpenTime: number
   takeProfit?: number
   stopLoss?: number
 }
@@ -40,10 +41,12 @@ type TradeRecord = {
   qty: number
   entryPrice: number
   entryBarIndex: number
+  entryOpenTime: number
   takeProfit?: number
   stopLoss?: number
   exitPrice?: number
   exitBarIndex?: number
+  exitOpenTime?: number
   pnl?: number
   feePaid?: number
   closeReason?: 'manual' | 'tp' | 'sl'
@@ -123,20 +126,36 @@ function getKlineCacheKey(symbol: string, interval: string) {
   return `${KLINE_CACHE_PREFIX}:${symbol}:${interval}`
 }
 
+function normalizeBars(interval: string, bars: Bar[]) {
+  if (!Array.isArray(bars) || bars.length === 0) return [] as Bar[]
+  const barMs = intervalToMs(interval)
+  const alignedNow = Math.floor(Date.now() / barMs) * barMs
+  const hasOpenTime = bars.some((bar: any) => typeof bar?.openTime === 'number' && Number.isFinite(bar.openTime))
+  return bars.map((bar: any, index: number) => ({
+    openTime: hasOpenTime
+      ? Number(bar.openTime)
+      : alignedNow - (bars.length - 1 - index) * barMs,
+    open: Number(bar.open),
+    high: Number(bar.high),
+    low: Number(bar.low),
+    close: Number(bar.close),
+  }))
+}
+
 function loadKlineCache(symbol: string, interval: string): KlineCachePayload | null {
   try {
     const raw = localStorage.getItem(getKlineCacheKey(symbol, interval))
     if (!raw) return null
     const parsed = JSON.parse(raw) as KlineCachePayload
     if (!parsed || !Array.isArray(parsed.bars)) return null
-    return parsed
+    return { ...parsed, bars: normalizeBars(interval, parsed.bars) }
   } catch {
     return null
   }
 }
 
 function saveKlineCache(symbol: string, interval: string, bars: Bar[]) {
-  const payload: KlineCachePayload = { symbol, interval, savedAt: Date.now(), bars }
+  const payload: KlineCachePayload = { symbol, interval, savedAt: Date.now(), bars: normalizeBars(interval, bars) }
   localStorage.setItem(getKlineCacheKey(symbol, interval), JSON.stringify(payload))
 }
 
@@ -152,14 +171,14 @@ function loadFullKlines(symbol: string, interval: string): Bar[] | null {
     const raw = localStorage.getItem(getFullKlineCacheKey(symbol, interval))
     if (!raw) return null
     const parsed = JSON.parse(raw)
-    return Array.isArray(parsed) ? parsed : null
+    return Array.isArray(parsed) ? normalizeBars(interval, parsed) : null
   } catch {
     return null
   }
 }
 
 function saveFullKlines(symbol: string, interval: string, bars: Bar[]) {
-  localStorage.setItem(getFullKlineCacheKey(symbol, interval), JSON.stringify(bars))
+  localStorage.setItem(getFullKlineCacheKey(symbol, interval), JSON.stringify(normalizeBars(interval, bars)))
 }
 
 function getFetchMetaKey(symbol: string, interval: string) {
@@ -229,6 +248,31 @@ function sanitizeState(input: Partial<IndicatorCenterState> | undefined): Indica
 function estimateOldestOpenTimeFromCount(barCount: number, interval: string) {
   if (!barCount) return undefined
   return Date.now() - barCount * intervalToMs(interval)
+}
+
+function getReplayAnchorTime(bars: Bar[], visibleCount: number, replayMode: boolean) {
+  if (!bars.length) return null
+  const index = replayMode
+    ? Math.max(0, Math.min(visibleCount, bars.length) - 1)
+    : bars.length - 1
+  return bars[index]?.openTime ?? null
+}
+
+function findBarIndexByOpenTime(bars: Bar[], targetOpenTime: number) {
+  if (!bars.length) return 1
+  let left = 0
+  let right = bars.length - 1
+  let answer = 0
+  while (left <= right) {
+    const mid = Math.floor((left + right) / 2)
+    if ((bars[mid]?.openTime ?? 0) <= targetOpenTime) {
+      answer = mid
+      left = mid + 1
+    } else {
+      right = mid - 1
+    }
+  }
+  return Math.max(1, answer + 1)
 }
 
 function calcFetchCoverage(oldestOpenTime?: number) {
@@ -317,6 +361,7 @@ async function fetchAllKlinesIncremental(
 
     const merged = [
       ...raw.map((item: any) => ({
+        openTime: Number(item[0]),
         open: Number(item[1]),
         high: Number(item[2]),
         low: Number(item[3]),
@@ -904,11 +949,12 @@ function KlineChart({
 
 export default function TrainingPage() {
   const [symbol, setSymbol] = useState('BTCUSDT')
-  const [interval, setInterval] = useState('15m')
+  const [viewInterval, setViewInterval] = useState('15m')
+  const [masterInterval, setMasterInterval] = useState('15m')
   const [open, setOpen] = useState(false)
   const [profiles, setProfiles] = useState<Record<string, IndicatorCenterState>>(() => loadProfiles())
   const [centerState, setCenterState] = useState<IndicatorCenterState>(() => sanitizeState(loadProfiles().BTCUSDT))
-  const [bars, setBars] = useState<Bar[]>([])
+  const [barsMap, setBarsMap] = useState<Record<string, Bar[]>>({})
   const [loading, setLoading] = useState(true)
   const [dataError, setDataError] = useState('')
   const [cacheStatus, setCacheStatus] = useState<'none' | 'fresh' | 'stale' | 'remote'>('none')
@@ -916,8 +962,8 @@ export default function TrainingPage() {
   const [fetchPaused, setFetchPaused] = useState(false)
   const fetchPausedRef = useRef(false)
   const fetchCancelledRef = useRef(false)
-  const intervalSwitchProgressRef = useRef<number | null>(null)
-  const preserveReplayOnIntervalSwitchRef = useRef(false)
+  const masterAnchorSwitchRef = useRef<number | null>(null)
+  const initializedMasterKeyRef = useRef<string | null>(null)
   const [replayMode, setReplayMode] = useState(true)
   const [isPlaying, setIsPlaying] = useState(false)
   const [replaySpeed, setReplaySpeed] = useState(2)
@@ -931,6 +977,27 @@ export default function TrainingPage() {
   const [position, setPosition] = useState<PositionState | null>(null)
   const [realizedPnl, setRealizedPnl] = useState(0)
   const [tradeRecords, setTradeRecords] = useState<TradeRecord[]>([])
+
+  const masterBars = barsMap[masterInterval] ?? []
+  const viewBarsAll = barsMap[viewInterval] ?? []
+  const masterAnchorIndex = replayMode
+    ? Math.max(0, Math.min(visibleCount, masterBars.length) - 1)
+    : Math.max(0, masterBars.length - 1)
+  const masterAnchorBar = masterBars[masterAnchorIndex] ?? null
+  const masterAnchorTime = masterAnchorBar?.openTime ?? null
+  const viewEnd = replayMode
+    ? (masterAnchorTime !== null ? findBarIndexByOpenTime(viewBarsAll, masterAnchorTime) : Math.min(1, viewBarsAll.length))
+    : viewBarsAll.length
+  const viewStart = replayMode ? Math.max(0, viewEnd - DISPLAY_WINDOW) : 0
+  const replayBars = useMemo(() => {
+    if (!viewBarsAll.length) return []
+    if (!replayMode) return viewBarsAll
+    return viewBarsAll.slice(viewStart, viewEnd)
+  }, [viewBarsAll, replayMode, viewStart, viewEnd])
+
+  const masterCurrentPrice = masterAnchorBar?.close ?? 0
+  const currentPrice = replayBars.length ? replayBars[replayBars.length - 1].close : masterCurrentPrice
+  const latestBar = masterAnchorBar
 
   useEffect(() => {
     const loaded = sanitizeState(profiles[symbol])
@@ -953,143 +1020,183 @@ export default function TrainingPage() {
   }, [fetchPaused])
 
   useEffect(() => {
+    setBarsMap({})
+    setFetchProgress(null)
+    setDataError('')
+    setCacheStatus('none')
+    initializedMasterKeyRef.current = null
+    masterAnchorSwitchRef.current = null
+    setVisibleCount(120)
+    setIsPlaying(false)
+  }, [symbol])
+
+  useEffect(() => {
     let cancelled = false
     fetchCancelledRef.current = false
     fetchPausedRef.current = false
     setFetchPaused(false)
 
-    const recentCached = loadKlineCache(symbol, interval)
-    const fullCached = loadFullKlines(symbol, interval)
-    const cacheAge = recentCached ? Date.now() - recentCached.savedAt : Number.MAX_SAFE_INTEGER
-    const hasFreshCache = !!recentCached && cacheAge < KLINE_CACHE_TTL_MS
+    const ensureIntervalLoaded = async (targetInterval: string, isUiInterval: boolean) => {
+      if (barsMap[targetInterval]?.length) {
+        if (isUiInterval) {
+          const cachedBars = barsMap[targetInterval]
+          const approxOldestTime = estimateOldestOpenTimeFromCount(cachedBars.length, targetInterval)
+          setLoading(false)
+          setCacheStatus('remote')
+          setFetchProgress({
+            chunks: loadFetchMeta(symbol, targetInterval)?.chunks ?? 0,
+            bars: cachedBars.length,
+            oldestOpenTime: approxOldestTime,
+            done: calcFetchCoverage(approxOldestTime) >= 99.9,
+          })
+        }
+        return
+      }
 
-    setFetchProgress(null)
+      const recentCached = loadKlineCache(symbol, targetInterval)
+      const fullCached = loadFullKlines(symbol, targetInterval)
+      const cacheAge = recentCached ? Date.now() - recentCached.savedAt : Number.MAX_SAFE_INTEGER
+      const hasFreshCache = !!recentCached && cacheAge < KLINE_CACHE_TTL_MS
 
-    if (fullCached?.length) {
-      const approxOldestTime = estimateOldestOpenTimeFromCount(fullCached.length, interval)
-      setBars(fullCached)
-      setCacheStatus('remote')
-      setLoading(false)
-      setFetchProgress({
-        chunks: loadFetchMeta(symbol, interval)?.chunks ?? 0,
-        bars: fullCached.length,
-        oldestOpenTime: approxOldestTime,
-        done: calcFetchCoverage(approxOldestTime) >= 99.9,
-      })
-    } else if (recentCached?.bars?.length) {
-      setBars(recentCached.bars)
-      setCacheStatus(hasFreshCache ? 'fresh' : 'stale')
-      setLoading(false)
-    } else {
-      setLoading(true)
-      setCacheStatus('none')
+      if (isUiInterval) {
+        setFetchProgress(null)
+        if (!fullCached?.length && !recentCached?.bars?.length) {
+          setLoading(true)
+          setCacheStatus('none')
+        }
+      }
+
+      if (fullCached?.length) {
+        setBarsMap((prev) => ({ ...prev, [targetInterval]: fullCached }))
+        if (isUiInterval) {
+          const approxOldestTime = estimateOldestOpenTimeFromCount(fullCached.length, targetInterval)
+          setCacheStatus('remote')
+          setLoading(false)
+          setFetchProgress({
+            chunks: loadFetchMeta(symbol, targetInterval)?.chunks ?? 0,
+            bars: fullCached.length,
+            oldestOpenTime: approxOldestTime,
+            done: calcFetchCoverage(approxOldestTime) >= 99.9,
+          })
+        }
+      } else if (recentCached?.bars?.length) {
+        setBarsMap((prev) => ({ ...prev, [targetInterval]: recentCached.bars }))
+        if (isUiInterval) {
+          setCacheStatus(hasFreshCache ? 'fresh' : 'stale')
+          setLoading(false)
+        }
+      }
+
+      fetchAllKlinesIncremental(
+        symbol,
+        targetInterval,
+        isUiInterval
+          ? (progress) => {
+              if (cancelled) return
+              setFetchProgress(progress)
+            }
+          : undefined,
+        isUiInterval
+          ? {
+              pausedRef: fetchPausedRef,
+              cancelledRef: fetchCancelledRef,
+            }
+          : undefined
+      )
+        .then((nextBars) => {
+          if (cancelled || !nextBars.length) return
+          setBarsMap((prev) => ({ ...prev, [targetInterval]: nextBars }))
+          saveKlineCache(symbol, targetInterval, nextBars)
+          saveFullKlines(symbol, targetInterval, nextBars)
+          if (isUiInterval) {
+            setCacheStatus('remote')
+            setLoading(false)
+          }
+        })
+        .catch((err) => {
+          if (cancelled || !isUiInterval) return
+          if (fullCached?.length || recentCached?.bars?.length) {
+            setDataError(`Binance 数据加载受限：${err instanceof Error ? err.message : 'unknown error'}，当前继续使用本地缓存`)
+          } else {
+            setDataError(`Binance 数据加载失败：${err instanceof Error ? err.message : 'unknown error'}`)
+          }
+          setLoading(false)
+        })
     }
 
     setDataError('')
-    if (!preserveReplayOnIntervalSwitchRef.current) {
-      setIsPlaying(false)
-    }
-
-    fetchAllKlinesIncremental(
-      symbol,
-      interval,
-      (progress) => {
-        if (cancelled) return
-        setFetchProgress(progress)
-      },
-      {
-        pausedRef: fetchPausedRef,
-        cancelledRef: fetchCancelledRef,
-      }
-    )
-      .then((nextBars) => {
-        if (cancelled) return
-        if (nextBars.length) {
-          setBars(nextBars)
-          saveKlineCache(symbol, interval, nextBars)
-          saveFullKlines(symbol, interval, nextBars)
-          setCacheStatus('remote')
-        }
-        setLoading(false)
-      })
-      .catch((err) => {
-        if (cancelled) return
-        if (fullCached?.length || recentCached?.bars?.length) {
-          setDataError(`Binance 数据加载受限：${err instanceof Error ? err.message : 'unknown error'}，当前继续使用本地缓存`)
-        } else {
-          setDataError(`Binance 数据加载失败：${err instanceof Error ? err.message : 'unknown error'}`)
-        }
-        setLoading(false)
-      })
+    ensureIntervalLoaded(viewInterval, true)
+    if (masterInterval !== viewInterval) ensureIntervalLoaded(masterInterval, false)
 
     return () => {
       cancelled = true
       fetchCancelledRef.current = true
     }
-  }, [symbol, interval])
+  }, [symbol, viewInterval, masterInterval])
 
   useEffect(() => {
-    if (!bars.length) return
-    if (preserveReplayOnIntervalSwitchRef.current && intervalSwitchProgressRef.current !== null) {
-      const ratio = intervalSwitchProgressRef.current
-      const mapped = Math.max(1, Math.min(bars.length, Math.round(bars.length * ratio)))
-      setVisibleCount(mapped)
-      intervalSwitchProgressRef.current = null
-      preserveReplayOnIntervalSwitchRef.current = false
+    const key = `${symbol}:${masterInterval}`
+    if (!masterBars.length) return
+
+    if (masterAnchorSwitchRef.current !== null) {
+      setVisibleCount(findBarIndexByOpenTime(masterBars, masterAnchorSwitchRef.current))
+      masterAnchorSwitchRef.current = null
+      initializedMasterKeyRef.current = key
       return
     }
-    const minStart = Math.min(DISPLAY_WINDOW, bars.length)
-    const maxStart = Math.max(minStart, bars.length - DISPLAY_WINDOW - 50)
+
+    if (initializedMasterKeyRef.current === key) return
+
+    const minStart = Math.min(DISPLAY_WINDOW, masterBars.length)
+    const maxStart = Math.max(minStart, masterBars.length - DISPLAY_WINDOW - 50)
     const next = maxStart > minStart
       ? Math.floor(Math.random() * (maxStart - minStart + 1)) + minStart
       : minStart
     setVisibleCount(next)
-  }, [bars])
+    initializedMasterKeyRef.current = key
+  }, [symbol, masterInterval, masterBars])
 
   useEffect(() => {
     if (!replayMode || !isPlaying) return
     const timer = window.setInterval(() => {
       setVisibleCount((prev) => {
-        if (prev >= bars.length) {
+        if (prev >= masterBars.length) {
           window.clearInterval(timer)
           return prev
         }
-        return Math.min(bars.length, prev + 1)
+        return Math.min(masterBars.length, prev + 1)
       })
     }, Math.max(80, 700 / replaySpeed))
     return () => window.clearInterval(timer)
-  }, [replayMode, isPlaying, replaySpeed, bars.length])
+  }, [replayMode, isPlaying, replaySpeed, masterBars.length])
 
   useEffect(() => {
-    if (visibleCount >= bars.length && isPlaying) setIsPlaying(false)
-  }, [visibleCount, bars.length, isPlaying])
+    if (visibleCount >= masterBars.length && isPlaying) setIsPlaying(false)
+  }, [visibleCount, masterBars.length, isPlaying])
 
-  const replayBars = useMemo(() => {
-    if (!replayMode) return bars
-    const end = Math.max(1, Math.min(visibleCount, bars.length))
-    const start = Math.max(0, end - DISPLAY_WINDOW)
-    return bars.slice(start, end)
-  }, [bars, replayMode, visibleCount])
-
-  const currentPrice = replayBars.length ? replayBars[replayBars.length - 1].close : 0
-  const latestBar = replayBars.length ? replayBars[replayBars.length - 1] : null
-  const visibleStart = replayMode ? Math.max(0, Math.max(1, Math.min(visibleCount, bars.length)) - DISPLAY_WINDOW) : 0
   const visibleTradeRecords = tradeRecords
+    .map((record) => {
+      const entryCount = findBarIndexByOpenTime(viewBarsAll, record.entryOpenTime)
+      const entryIndex = entryCount - 1
+      const exitCount = record.exitOpenTime ? findBarIndexByOpenTime(viewBarsAll, record.exitOpenTime) : undefined
+      const exitIndex = typeof exitCount === 'number' ? exitCount - 1 : undefined
+      return { ...record, entryBarIndex: entryIndex, exitBarIndex: exitIndex }
+    })
     .filter((record) => {
-      const entryVisible = record.entryBarIndex >= visibleStart && record.entryBarIndex < visibleStart + replayBars.length
-      const exitVisible = typeof record.exitBarIndex === 'number' && record.exitBarIndex >= visibleStart && record.exitBarIndex < visibleStart + replayBars.length
+      const entryVisible = record.entryBarIndex >= viewStart && record.entryBarIndex < viewStart + replayBars.length
+      const exitVisible = typeof record.exitBarIndex === 'number' && record.exitBarIndex >= viewStart && record.exitBarIndex < viewStart + replayBars.length
       return entryVisible || exitVisible || record.status === 'open'
     })
     .map((record) => ({
       ...record,
-      entryBarIndex: record.entryBarIndex - visibleStart,
-      exitBarIndex: typeof record.exitBarIndex === 'number' ? record.exitBarIndex - visibleStart : undefined,
+      entryBarIndex: record.entryBarIndex - viewStart,
+      exitBarIndex: typeof record.exitBarIndex === 'number' ? record.exitBarIndex - viewStart : undefined,
     }))
 
   const floatingPnl = position
     ? position.side === 'long'
-      ? (currentPrice - position.entry) * position.qty
-      : (position.entry - currentPrice) * position.qty
+      ? (masterCurrentPrice - position.entry) * position.qty
+      : (position.entry - masterCurrentPrice) * position.qty
     : 0
   const equity = balance + floatingPnl
 
@@ -1144,9 +1251,9 @@ export default function TrainingPage() {
   })
 
   const restartReplay = () => {
-    if (!bars.length) return
-    const minStart = Math.min(DISPLAY_WINDOW, bars.length)
-    const maxStart = Math.max(minStart, bars.length - DISPLAY_WINDOW - 50)
+    if (!masterBars.length) return
+    const minStart = Math.min(DISPLAY_WINDOW, masterBars.length)
+    const maxStart = Math.max(minStart, masterBars.length - DISPLAY_WINDOW - 50)
     const next = maxStart > minStart
       ? Math.floor(Math.random() * (maxStart - minStart + 1)) + minStart
       : minStart
@@ -1162,8 +1269,9 @@ export default function TrainingPage() {
   }
 
   const settlePosition = (exitPrice: number, closeReason: 'manual' | 'tp' | 'sl') => {
-    if (!position) return
-    const exitIndex = replayMode ? Math.max(0, Math.min(visibleCount, bars.length) - 1) : Math.max(0, bars.length - 1)
+    if (!position || !masterBars.length) return
+    const exitIndex = replayMode ? Math.max(0, Math.min(visibleCount, masterBars.length) - 1) : Math.max(0, masterBars.length - 1)
+    const exitBar = masterBars[exitIndex]
     const grossPnl = position.side === 'long'
       ? (exitPrice - position.entry) * position.qty
       : (position.entry - exitPrice) * position.qty
@@ -1180,6 +1288,7 @@ export default function TrainingPage() {
             ...next[i],
             exitPrice,
             exitBarIndex: exitIndex,
+            exitOpenTime: exitBar?.openTime,
             pnl: netPnl,
             feePaid,
             closeReason,
@@ -1194,27 +1303,37 @@ export default function TrainingPage() {
   }
 
   const openPosition = (side: PositionSide) => {
-    if (!currentPrice || orderQty <= 0 || position) return
-    const globalIndex = replayMode ? Math.max(0, Math.min(visibleCount, bars.length) - 1) : Math.max(0, bars.length - 1)
+    if (!masterCurrentPrice || orderQty <= 0 || position || !masterBars.length) return
+    const globalIndex = replayMode ? Math.max(0, Math.min(visibleCount, masterBars.length) - 1) : Math.max(0, masterBars.length - 1)
+    const activeBar = masterBars[globalIndex]
     const tp = takeProfitInput > 0 ? takeProfitInput : undefined
     const sl = stopLossInput > 0 ? stopLossInput : undefined
     const record: TradeRecord = {
       id: `${Date.now()}-${side}`,
       side,
       qty: orderQty,
-      entryPrice: currentPrice,
+      entryPrice: masterCurrentPrice,
       entryBarIndex: globalIndex,
+      entryOpenTime: activeBar?.openTime ?? Date.now(),
       takeProfit: tp,
       stopLoss: sl,
       status: 'open',
     }
-    setPosition({ side, qty: orderQty, entry: currentPrice, entryBarIndex: globalIndex, takeProfit: tp, stopLoss: sl })
+    setPosition({
+      side,
+      qty: orderQty,
+      entry: masterCurrentPrice,
+      entryBarIndex: globalIndex,
+      entryOpenTime: activeBar?.openTime ?? Date.now(),
+      takeProfit: tp,
+      stopLoss: sl,
+    })
     setTradeRecords((prev) => [...prev, record])
   }
 
   const closePosition = () => {
-    if (!position || !currentPrice) return
-    settlePosition(currentPrice, 'manual')
+    if (!position || !masterCurrentPrice) return
+    settlePosition(masterCurrentPrice, 'manual')
   }
 
   useEffect(() => {
@@ -1246,11 +1365,22 @@ export default function TrainingPage() {
     setFetchPaused((prev) => !prev)
   }
 
+  const handleTogglePlay = () => {
+    if (isPlaying) {
+      setIsPlaying(false)
+      return
+    }
+    const anchorTime = replayBars.length ? replayBars[replayBars.length - 1].openTime : masterAnchorTime
+    if (anchorTime !== null) masterAnchorSwitchRef.current = anchorTime
+    setMasterInterval(viewInterval)
+    setIsPlaying(true)
+  }
+
   return (
     <div className="app-shell">
       <header className="topbar compact-top">
         <div className="topbar-main">
-          <select className="symbol-select" value={symbol} onChange={(e) => setSymbol(e.target.value)}>
+          <select className="symbol-select" value={symbol} onChange={(e) => { setBarsMap({}); initializedMasterKeyRef.current = null; setSymbol(e.target.value) }}>
             {symbols.map((item) => <option key={item} value={item}>{item}</option>)}
           </select>
 
@@ -1258,12 +1388,10 @@ export default function TrainingPage() {
             {intervals.map((item) => (
               <button
                 key={item}
-                className={item === interval ? 'btn active compact-btn' : 'btn compact-btn'}
+                className={item === viewInterval ? 'btn active compact-btn' : 'btn compact-btn'}
                 onClick={() => {
-                  if (item === interval) return
-                  intervalSwitchProgressRef.current = bars.length ? Math.max(1, Math.min(visibleCount, bars.length)) / bars.length : null
-                  preserveReplayOnIntervalSwitchRef.current = true
-                  setInterval(item)
+                  if (item === viewInterval) return
+                  setViewInterval(item)
                 }}
               >
                 {item}
@@ -1279,15 +1407,17 @@ export default function TrainingPage() {
             <button className="btn primary only-icon compact-icon-btn" onClick={() => setOpen(true)} title="指标中心">
               <span className="toolbar-icon">ƒx</span>
             </button>
+            <div className="mode-chip">主周期 {masterInterval}</div>
+            <div className="mode-chip ghost">观察 {viewInterval}</div>
 
             <div className="replay-toolbar header-replay-toolbar">
-              <button className="btn compact-btn" onClick={() => setIsPlaying((prev) => !prev)} disabled={!replayMode || !bars.length}>
+              <button className="btn compact-btn" onClick={handleTogglePlay} disabled={!replayMode || !viewBarsAll.length}>
                 {isPlaying ? '暂停' : '播放'}
               </button>
-              <button className="btn compact-btn" onClick={() => setVisibleCount((prev) => Math.min(bars.length, prev + 1))} disabled={!replayMode || visibleCount >= bars.length}>
+              <button className="btn compact-btn" onClick={() => setVisibleCount((prev) => Math.min(masterBars.length, prev + 1))} disabled={!replayMode || visibleCount >= masterBars.length}>
                 前进一步
               </button>
-              <button className="btn compact-btn" onClick={restartReplay} disabled={!replayMode || !bars.length}>
+              <button className="btn compact-btn" onClick={restartReplay} disabled={!replayMode || !masterBars.length}>
                 随机起点
               </button>
               <div className="speed-box">
@@ -1296,7 +1426,7 @@ export default function TrainingPage() {
                   {replaySpeeds.map((speed) => <option key={speed} value={speed}>{speed}x</option>)}
                 </select>
               </div>
-              <div className="progress-chip">进度：{replayMode ? Math.min(visibleCount, bars.length) : bars.length} / {bars.length || 0}</div>
+              <div className="progress-chip">进度：{replayMode ? Math.min(visibleCount, masterBars.length) : masterBars.length} / {masterBars.length || 0}</div>
             </div>
           </div>
         </div>
@@ -1379,7 +1509,7 @@ export default function TrainingPage() {
           <FetchProgressPanel
             loading={loading}
             fetchProgress={fetchProgress}
-            bars={bars}
+            bars={viewBarsAll}
             isPaused={fetchPaused}
             onTogglePause={toggleFetchPause}
             cacheStatus={cacheStatus}

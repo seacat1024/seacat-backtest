@@ -1,4 +1,4 @@
-git checkout -b feat/interval-progress-preserve
+git checkout -b feat/master-view-intervals
 git add src/pages/Training.tsx src/styles/global.css package.json GIT_COMMANDS.txt
-git commit -m "feat(ui): widen trade inputs and preserve replay progress when switching intervals"
-git push origin feat/interval-progress-preserve
+git commit -m "feat(replay): split master replay interval from view interval"
+git push origin feat/master-view-intervals

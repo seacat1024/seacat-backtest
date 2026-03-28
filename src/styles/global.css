@@ -246,7 +246,7 @@ button, input, select { font: inherit; }
   background: rgba(12, 24, 44, 0.6);
 }
 .trade-input {
-  width: 92px;
+  width: 106px;
   height: 30px;
   border: 1px solid #374151;
   background: #111827;
@@ -366,7 +366,7 @@ button, input, select { font: inherit; }
   background: rgba(12, 24, 44, 0.6);
 }
 .trade-input {
-  width: 92px;
+  width: 106px;
   height: 30px;
   border: 1px solid #374151;
   background: #111827;
@@ -601,10 +601,10 @@ button, input, select { font: inherit; }
   white-space: nowrap;
 }
 .trade-input.short {
-  width: 92px;
+  width: 104px;
 }
 .trade-input {
-  width: 92px;
+  width: 106px;
   height: 30px;
 }
 .loaded-indicators-bar {
@@ -706,4 +706,23 @@ button, input, select { font: inherit; }
   .topbar-main {
     width: 100%;
   }
+}
+
+
+.mode-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(59, 130, 246, 0.24);
+  background: rgba(30, 41, 59, 0.72);
+  color: #bfdbfe;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.mode-chip.ghost {
+  color: #cbd5e1;
+  border-color: rgba(148, 163, 184, 0.18);
 }
