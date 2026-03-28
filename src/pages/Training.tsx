@@ -65,7 +65,7 @@ type FetchControl = {
   cancelledRef: { current: boolean }
 }
 
-const intervals = ['1m', '5m', '15m', '15m', '1h', '4h', '1d', '1W']
+const intervals = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1W']
 const symbols = ['BTCUSDT', 'ETHUSDT']
 const replaySpeeds = [1, 2, 4, 8]
 const STORAGE_KEY = 'seacat-backtest-indicator-profiles-v1'
@@ -916,6 +916,8 @@ export default function TrainingPage() {
   const [fetchPaused, setFetchPaused] = useState(false)
   const fetchPausedRef = useRef(false)
   const fetchCancelledRef = useRef(false)
+  const intervalSwitchProgressRef = useRef<number | null>(null)
+  const preserveReplayOnIntervalSwitchRef = useRef(false)
   const [replayMode, setReplayMode] = useState(true)
   const [isPlaying, setIsPlaying] = useState(false)
   const [replaySpeed, setReplaySpeed] = useState(2)
@@ -984,7 +986,9 @@ export default function TrainingPage() {
     }
 
     setDataError('')
-    setIsPlaying(false)
+    if (!preserveReplayOnIntervalSwitchRef.current) {
+      setIsPlaying(false)
+    }
 
     fetchAllKlinesIncremental(
       symbol,
@@ -1026,6 +1030,14 @@ export default function TrainingPage() {
 
   useEffect(() => {
     if (!bars.length) return
+    if (preserveReplayOnIntervalSwitchRef.current && intervalSwitchProgressRef.current !== null) {
+      const ratio = intervalSwitchProgressRef.current
+      const mapped = Math.max(1, Math.min(bars.length, Math.round(bars.length * ratio)))
+      setVisibleCount(mapped)
+      intervalSwitchProgressRef.current = null
+      preserveReplayOnIntervalSwitchRef.current = false
+      return
+    }
     const minStart = Math.min(DISPLAY_WINDOW, bars.length)
     const maxStart = Math.max(minStart, bars.length - DISPLAY_WINDOW - 50)
     const next = maxStart > minStart
@@ -1237,46 +1249,38 @@ export default function TrainingPage() {
   return (
     <div className="app-shell">
       <header className="topbar compact-top">
-        <div className="brand compact-brand">SeaCat Backtest</div>
-        <div className="symbol-group">
-          {symbols.map((item) => (
-            <button key={item} className={item === symbol ? 'btn active compact-btn' : 'btn compact-btn'} onClick={() => setSymbol(item)}>{item}</button>
-          ))}
-        </div>
-        <div className="interval-group">
-          {intervals.map((item) => (
-            <button key={item} className={item === interval ? 'btn active compact-btn' : 'btn compact-btn'} onClick={() => setInterval(item)}>{item}</button>
-          ))}
-        </div>
-        <div className="toolbar-actions">
-          <button className={replayMode ? 'btn active compact-btn' : 'btn compact-btn'} onClick={() => { setReplayMode((prev) => !prev); setIsPlaying(false) }}>
-            {replayMode ? '复盘中' : '看全图'}
-          </button>
-          <button className="btn secondary compact-btn" onClick={() => setCenterState(defaultIndicatorState())}>重置</button>
-          <button className="btn primary only-icon compact-icon-btn" onClick={() => setOpen(true)} title="指标中心">
-            <span className="toolbar-icon">ƒx</span>
-          </button>
-        </div>
-      </header>
+        <div className="topbar-main">
+          <select className="symbol-select" value={symbol} onChange={(e) => setSymbol(e.target.value)}>
+            {symbols.map((item) => <option key={item} value={item}>{item}</option>)}
+          </select>
 
-      <div className="workspace compact-workspace">
-        <main className="main-chart">
-          <div className="chart-header stacked compact-chart-header">
-            <div className="chart-header-top">
-              <div className="chart-title">{symbol} 永续 · {interval}</div>
-              <div className="chart-note">时间轴已隐藏 · v1.2.51 第一阶段收尾版（去 mock / 暂停恢复 / 强化进度 UI）</div>
-            </div>
+          <div className="interval-group">
+            {intervals.map((item) => (
+              <button
+                key={item}
+                className={item === interval ? 'btn active compact-btn' : 'btn compact-btn'}
+                onClick={() => {
+                  if (item === interval) return
+                  intervalSwitchProgressRef.current = bars.length ? Math.max(1, Math.min(visibleCount, bars.length)) / bars.length : null
+                  preserveReplayOnIntervalSwitchRef.current = true
+                  setInterval(item)
+                }}
+              >
+                {item}
+              </button>
+            ))}
+          </div>
 
-            <FetchProgressPanel
-              loading={loading}
-              fetchProgress={fetchProgress}
-              bars={bars}
-              isPaused={fetchPaused}
-              onTogglePause={toggleFetchPause}
-              cacheStatus={cacheStatus}
-            />
+          <div className="toolbar-actions header-action-strip">
+            <button className={replayMode ? 'btn active compact-btn' : 'btn compact-btn'} onClick={() => { setReplayMode((prev) => !prev); setIsPlaying(false) }}>
+              {replayMode ? '复盘中' : '看全图'}
+            </button>
+            <button className="btn secondary compact-btn" onClick={() => setCenterState(defaultIndicatorState())}>重置</button>
+            <button className="btn primary only-icon compact-icon-btn" onClick={() => setOpen(true)} title="指标中心">
+              <span className="toolbar-icon">ƒx</span>
+            </button>
 
-            <div className="replay-toolbar">
+            <div className="replay-toolbar header-replay-toolbar">
               <button className="btn compact-btn" onClick={() => setIsPlaying((prev) => !prev)} disabled={!replayMode || !bars.length}>
                 {isPlaying ? '暂停' : '播放'}
               </button>
@@ -1292,38 +1296,40 @@ export default function TrainingPage() {
                   {replaySpeeds.map((speed) => <option key={speed} value={speed}>{speed}x</option>)}
                 </select>
               </div>
-              <div className="progress-chip">进度：{replayMode ? Math.min(visibleCount, bars.length) : bars.length} / 全量历史 {bars.length || 0} 根</div>
+              <div className="progress-chip">进度：{replayMode ? Math.min(visibleCount, bars.length) : bars.length} / {bars.length || 0}</div>
             </div>
+          </div>
+        </div>
+      </header>
 
-            <div className="trade-ui-panel">
-              <div className="trade-card">
-                <div className="trade-card-title">账户与下单</div>
-                <div className="trade-grid trade-grid-3">
-                  <label>初始资金</label>
-                  <input className="trade-input" type="number" value={initialBalance} onChange={(e) => setInitialBalance(Number(e.target.value) || 0)} />
-                  <label>下单数量</label>
-                  <input className="trade-input" type="number" value={orderQty} step="0.01" onChange={(e) => setOrderQty(Number(e.target.value) || 0)} />
-                  <label>止盈</label>
-                  <input className="trade-input" type="number" value={takeProfitInput} onChange={(e) => setTakeProfitInput(Number(e.target.value) || 0)} />
-                  <label>止损</label>
-                  <input className="trade-input" type="number" value={stopLossInput} onChange={(e) => setStopLossInput(Number(e.target.value) || 0)} />
-                  <label>手续费%</label>
-                  <input className="trade-input" type="number" step="0.01" value={feeRate} onChange={(e) => setFeeRate(Number(e.target.value) || 0)} />
-                </div>
-                <div className="trade-action-row">
-                  <button className="btn compact-btn" onClick={resetAccount}>重置账户</button>
-                  <button className="btn buy-btn compact-btn" onClick={() => openPosition('long')} disabled={!!position || !currentPrice}>开多</button>
-                  <button className="btn sell-btn compact-btn" onClick={() => openPosition('short')} disabled={!!position || !currentPrice}>开空</button>
-                  <button className="btn secondary compact-btn" onClick={closePosition} disabled={!position}>平仓</button>
-                </div>
+      <div className="workspace compact-workspace">
+        <main className="main-chart">
+          <div className="chart-header stacked compact-chart-header">
+            <div className="trade-toolbar compact-trade-toolbar">
+              <div className="account-box">
+                <span className="trade-mini-label">资金</span>
+                <input className="trade-input short" type="number" value={initialBalance} onChange={(e) => setInitialBalance(Number(e.target.value) || 0)} />
               </div>
-              <div className="trade-ui-right">
-                <div className="metric-card"><span className="metric-label">现价</span><span className="metric-value">{currentPrice.toFixed(2)}</span></div>
-                <div className="metric-card"><span className="metric-label">余额</span><span className="metric-value">{balance.toFixed(2)}</span></div>
-                <div className="metric-card"><span className="metric-label">浮盈亏</span><span className={`metric-value ${floatingPnl >= 0 ? 'up' : 'down'}`}>{formatPnl(floatingPnl)}</span></div>
-                <div className="metric-card"><span className="metric-label">已实现</span><span className={`metric-value ${realizedPnl >= 0 ? 'up' : 'down'}`}>{formatPnl(realizedPnl)}</span></div>
-                <div className="metric-card wide"><span className="metric-label">净值 / 持仓</span><span className="metric-value">{equity.toFixed(2)} · {position ? `${position.side === 'long' ? '多' : '空'} ${position.qty} @ ${position.entry.toFixed(2)}${position.takeProfit ? ` · TP ${position.takeProfit}` : ''}${position.stopLoss ? ` · SL ${position.stopLoss}` : ''}` : '暂无持仓'}</span></div>
+              <div className="account-box">
+                <span className="trade-mini-label">数量</span>
+                <input className="trade-input short" type="number" value={orderQty} step="0.01" onChange={(e) => setOrderQty(Number(e.target.value) || 0)} />
               </div>
+              <div className="account-box">
+                <span className="trade-mini-label">止盈</span>
+                <input className="trade-input short" type="number" value={takeProfitInput} onChange={(e) => setTakeProfitInput(Number(e.target.value) || 0)} />
+              </div>
+              <div className="account-box">
+                <span className="trade-mini-label">止损</span>
+                <input className="trade-input short" type="number" value={stopLossInput} onChange={(e) => setStopLossInput(Number(e.target.value) || 0)} />
+              </div>
+              <div className="account-box">
+                <span className="trade-mini-label">手续费%</span>
+                <input className="trade-input short" type="number" step="0.01" value={feeRate} onChange={(e) => setFeeRate(Number(e.target.value) || 0)} />
+              </div>
+              <button className="btn compact-btn" onClick={resetAccount}>重置</button>
+              <button className="btn buy-btn compact-btn" onClick={() => openPosition('long')} disabled={!!position || !currentPrice}>开多</button>
+              <button className="btn sell-btn compact-btn" onClick={() => openPosition('short')} disabled={!!position || !currentPrice}>开空</button>
+              <button className="btn secondary compact-btn" onClick={closePosition} disabled={!position}>平仓</button>
             </div>
 
             <div className="loaded-indicators-bar compact-loaded">
@@ -1344,11 +1350,18 @@ export default function TrainingPage() {
               <div className="persist-chip">指标已保存：{symbol}</div>
               <div className={`cache-chip ${cacheStatus}`}>{cacheStatus === 'fresh' ? 'K线缓存命中' : cacheStatus === 'stale' ? 'K线旧缓存' : cacheStatus === 'remote' ? 'K线远端已刷新' : '无缓存'}</div>
             </div>
-            {dataError ? <div className="error-banner">{dataError}</div> : null}
           </div>
 
           <div className="chart-wrap compact-chart-wrap">
             <KlineChart bars={replayBars} state={centerState} loading={loading} tradeRecords={visibleTradeRecords} currentPrice={currentPrice} />
+          </div>
+
+          <div className="trade-ui-right metrics-below">
+            <div className="metric-card"><span className="metric-label">现价</span><span className="metric-value">{currentPrice.toFixed(2)}</span></div>
+            <div className="metric-card"><span className="metric-label">余额</span><span className="metric-value">{balance.toFixed(2)}</span></div>
+            <div className="metric-card"><span className="metric-label">浮盈亏</span><span className={`metric-value ${floatingPnl >= 0 ? 'up' : 'down'}`}>{formatPnl(floatingPnl)}</span></div>
+            <div className="metric-card"><span className="metric-label">已实现</span><span className={`metric-value ${realizedPnl >= 0 ? 'up' : 'down'}`}>{formatPnl(realizedPnl)}</span></div>
+            <div className="metric-card wide"><span className="metric-label">净值 / 持仓</span><span className="metric-value">{equity.toFixed(2)} · {position ? `${position.side === 'long' ? '多' : '空'} ${position.qty} @ ${position.entry.toFixed(2)}${position.takeProfit ? ` · TP ${position.takeProfit}` : ''}${position.stopLoss ? ` · SL ${position.stopLoss}` : ''}` : '暂无持仓'}</span></div>
           </div>
 
           <div className="stats-panel">
@@ -1362,6 +1375,16 @@ export default function TrainingPage() {
             <div className="stat-card"><span>最大连胜</span><strong>{maxWinStreak}</strong></div>
             <div className="stat-card"><span>最大连亏</span><strong>{maxLossStreak}</strong></div>
           </div>
+
+          <FetchProgressPanel
+            loading={loading}
+            fetchProgress={fetchProgress}
+            bars={bars}
+            isPaused={fetchPaused}
+            onTogglePause={toggleFetchPause}
+            cacheStatus={cacheStatus}
+          />
+          {dataError ? <div className="error-banner fetch-error-inline">{dataError}</div> : null}
 
           <div className="records-panel">
             <div className="records-title">交易记录</div>
