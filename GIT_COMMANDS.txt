@@ -1,4 +1,4 @@
-git checkout -b feat/master-view-intervals
-git add src/pages/Training.tsx src/styles/global.css package.json GIT_COMMANDS.txt
-git commit -m "feat(replay): split master replay interval from view interval"
-git push origin feat/master-view-intervals
+git checkout -b feat/status-ui-on-stable-layout
+git add src/pages/Training.tsx GIT_COMMANDS.txt README-V1.3.7.txt
+git commit -m "fix(fetch): show http status in ui on stable v1.3.5 layout"
+git push origin feat/status-ui-on-stable-layout

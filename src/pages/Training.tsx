@@ -8,6 +8,7 @@ type HoverData = {
   index: number
   x: number
   y: number
+  openTime: number
   bar: Bar
   maValues: Array<{ label: string; value: number }>
   emaValues: Array<{ label: string; value: number }>
@@ -72,7 +73,7 @@ const intervals = ['1m', '5m', '15m', '30m', '1h', '4h', '1d', '1W']
 const symbols = ['BTCUSDT', 'ETHUSDT']
 const replaySpeeds = [1, 2, 4, 8]
 const STORAGE_KEY = 'seacat-backtest-indicator-profiles-v1'
-const KLINE_CACHE_PREFIX = 'seacat-backtest-kline-cache-v1'
+const KLINE_CACHE_PREFIX = 'seacat-backtest-kline-cache-v2'
 const KLINE_CACHE_TTL_MS = 1000 * 60 * 15
 const DISPLAY_WINDOW = 140
 const FIVE_YEARS_MS = 1000 * 60 * 60 * 24 * 365 * 5
@@ -118,6 +119,40 @@ function loadProfiles(): Record<string, IndicatorCenterState> {
   }
 }
 
+function isValidBar(input: any): input is Bar {
+  return !!input
+    && Number.isFinite(input.openTime)
+    && Number.isFinite(input.open)
+    && Number.isFinite(input.high)
+    && Number.isFinite(input.low)
+    && Number.isFinite(input.close)
+}
+
+function sanitizeBars(input: any): Bar[] {
+  if (!Array.isArray(input)) return []
+  const cleaned = input.filter(isValidBar).sort((a, b) => a.openTime - b.openTime)
+  const deduped: Bar[] = []
+  for (const bar of cleaned) {
+    if (!deduped.length || deduped[deduped.length - 1].openTime !== bar.openTime) deduped.push(bar)
+    else deduped[deduped.length - 1] = bar
+  }
+  return deduped
+}
+
+function purgeLegacySyntheticCaches() {
+  try {
+    const keysToDelete: string[] = []
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const key = localStorage.key(i)
+      if (!key) continue
+      if (LEGACY_CACHE_PREFIXES.some((prefix) => key.startsWith(prefix))) keysToDelete.push(key)
+    }
+    keysToDelete.forEach((key) => localStorage.removeItem(key))
+  } catch {
+    // ignore storage cleanup failures
+  }
+}
+
 function saveProfiles(profiles: Record<string, IndicatorCenterState>) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(profiles))
 }
@@ -159,8 +194,13 @@ function saveKlineCache(symbol: string, interval: string, bars: Bar[]) {
   localStorage.setItem(getKlineCacheKey(symbol, interval), JSON.stringify(payload))
 }
 
-const FULL_KLINE_CACHE_PREFIX = 'seacat-backtest-full-kline-v3'
-const FULL_FETCH_META_PREFIX = 'seacat-backtest-fetch-meta-v2'
+const FULL_KLINE_CACHE_PREFIX = 'seacat-backtest-full-kline-v4'
+const FULL_FETCH_META_PREFIX = 'seacat-backtest-fetch-meta-v3'
+const LEGACY_CACHE_PREFIXES = [
+  'seacat-backtest-kline-cache-v1',
+  'seacat-backtest-full-kline-v3',
+  'seacat-backtest-fetch-meta-v2',
+]
 
 function getFullKlineCacheKey(symbol: string, interval: string) {
   return `${FULL_KLINE_CACHE_PREFIX}:${symbol}:${interval}`
@@ -227,7 +267,96 @@ function intervalToMs(interval: string) {
   return map[interval] ?? 60_000
 }
 
+function bucketOpenTime(timestamp: number, interval: string) {
+  const date = new Date(timestamp)
+  if (interval === '1d') {
+    return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate())
+  }
+  if (interval === '1W') {
+    const utcDay = date.getUTCDay()
+    const diffToMonday = utcDay === 0 ? 6 : utcDay - 1
+    const monday = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()))
+    monday.setUTCDate(monday.getUTCDate() - diffToMonday)
+    monday.setUTCHours(0, 0, 0, 0)
+    return monday.getTime()
+  }
+  const intervalMs = intervalToMs(interval)
+  return Math.floor(timestamp / intervalMs) * intervalMs
+}
+
+function canAggregateInterval(sourceInterval: string, targetInterval: string) {
+  const sourceMs = intervalToMs(sourceInterval)
+  const targetMs = intervalToMs(targetInterval)
+  return targetMs >= sourceMs && targetMs % sourceMs === 0
+}
+
+function hasRenderableBars(bars: Bar[], minBars = 8) {
+  return Array.isArray(bars) && bars.length >= minBars
+}
+
+function aggregateBarsToInterval(sourceBars: Bar[], targetInterval: string) {
+  if (!sourceBars.length) return [] as Bar[]
+  const aggregated: Bar[] = []
+  let current: Bar | null = null
+
+  for (const bar of sourceBars) {
+    const bucket = bucketOpenTime(bar.openTime, targetInterval)
+    if (!current || current.openTime != bucket) {
+      current = {
+        openTime: bucket,
+        open: bar.open,
+        high: bar.high,
+        low: bar.low,
+        close: bar.close,
+      }
+      aggregated.push(current)
+      continue
+    }
+
+    current.high = Math.max(current.high, bar.high)
+    current.low = Math.min(current.low, bar.low)
+    current.close = bar.close
+  }
+
+  return aggregated
+}
+
+function findBestAggregateSourceInterval(loadedBarsMap: Record<string, Bar[]>, targetInterval: string) {
+  const candidates = Object.entries(loadedBarsMap)
+    .filter(([interval, bars]) => interval !== targetInterval && Array.isArray(bars) && bars.length > 1 && canAggregateInterval(interval, targetInterval))
+    .sort((a, b) => intervalToMs(a[0]) - intervalToMs(b[0]))
+
+  return candidates[0]?.[0] ?? null
+}
+
+function buildResolvedBarsMap(loadedBarsMap: Record<string, Bar[]>) {
+  const resolved: Record<string, Bar[]> = { ...loadedBarsMap }
+
+  for (const interval of intervals) {
+    if (resolved[interval]?.length) continue
+    const sourceInterval = findBestAggregateSourceInterval(resolved, interval)
+    if (!sourceInterval) continue
+    const sourceBars = resolved[sourceInterval] ?? []
+    if (!sourceBars.length) continue
+    resolved[interval] = aggregateBarsToInterval(sourceBars, interval)
+  }
+
+  return resolved
+}
+
 const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms))
+
+function formatFetchError(err: unknown) {
+  const anyErr = err as any
+  const message = anyErr?.message || 'unknown error'
+  const status = anyErr?.status
+  const statusText = anyErr?.statusText
+  const retryAfter = anyErr?.retryAfter
+  const extra = status
+    ? ` (HTTP ${status}${statusText ? ` ${statusText}` : ''}${retryAfter ? `, retryAfter=${retryAfter}` : ''})`
+    : ''
+  return `${message}${extra}`
+}
 
 function sanitizeState(input: Partial<IndicatorCenterState> | undefined): IndicatorCenterState {
   const defaults = defaultIndicatorState()
@@ -258,21 +387,85 @@ function getReplayAnchorTime(bars: Bar[], visibleCount: number, replayMode: bool
   return bars[index]?.openTime ?? null
 }
 
-function findBarIndexByOpenTime(bars: Bar[], targetOpenTime: number) {
-  if (!bars.length) return 1
+function findNearestBarIndexByOpenTime(bars: Bar[], targetOpenTime: number) {
+  if (!bars.length) return -1
+  if (targetOpenTime <= bars[0].openTime) return 0
+  if (targetOpenTime >= bars[bars.length - 1].openTime) return bars.length - 1
+
   let left = 0
   let right = bars.length - 1
-  let answer = 0
   while (left <= right) {
     const mid = Math.floor((left + right) / 2)
-    if ((bars[mid]?.openTime ?? 0) <= targetOpenTime) {
-      answer = mid
-      left = mid + 1
-    } else {
-      right = mid - 1
-    }
+    const midOpenTime = bars[mid]?.openTime ?? 0
+    if (midOpenTime === targetOpenTime) return mid
+    if (midOpenTime < targetOpenTime) left = mid + 1
+    else right = mid - 1
   }
-  return Math.max(1, answer + 1)
+
+  const lowerIndex = Math.max(0, right)
+  const upperIndex = Math.min(bars.length - 1, left)
+  const lowerDiff = Math.abs((bars[lowerIndex]?.openTime ?? 0) - targetOpenTime)
+  const upperDiff = Math.abs((bars[upperIndex]?.openTime ?? 0) - targetOpenTime)
+  return upperDiff < lowerDiff ? upperIndex : lowerIndex
+}
+
+function resolveSyncedViewIndex(bars: Bar[], targetOpenTime: number | null, progressRatio: number) {
+  if (!bars.length) return -1
+  const ratioIndex = Math.max(0, Math.min(bars.length - 1, Math.floor((bars.length - 1) * progressRatio)))
+  if (targetOpenTime === null || !Number.isFinite(targetOpenTime)) return ratioIndex
+
+  const firstOpenTime = bars[0]?.openTime ?? 0
+  const lastOpenTime = bars[bars.length - 1]?.openTime ?? 0
+  if (targetOpenTime < firstOpenTime || targetOpenTime > lastOpenTime) return ratioIndex
+
+  const nearest = findNearestBarIndexByOpenTime(bars, targetOpenTime)
+  return nearest < 0 ? ratioIndex : nearest
+}
+
+function getSyncedWindowBars(
+  bars: Bar[],
+  syncedIndex: number,
+  replayMode: boolean,
+  viewOffset: number,
+  windowSize = DISPLAY_WINDOW,
+) {
+  if (!bars.length) return { bars: [] as Bar[], start: 0, end: 0, anchorIndex: -1 }
+  if (!replayMode) return { bars, start: 0, end: bars.length, anchorIndex: bars.length - 1 }
+
+  const safeIndex = Math.max(0, Math.min(bars.length - 1, syncedIndex < 0 ? bars.length - 1 : syncedIndex))
+  const shiftedAnchor = Math.max(0, safeIndex - Math.max(0, viewOffset))
+  const minEnd = Math.min(windowSize, bars.length)
+  const end = Math.max(minEnd, Math.min(bars.length, shiftedAnchor + 1))
+  const start = Math.max(0, end - windowSize)
+  return {
+    bars: bars.slice(start, end),
+    start,
+    end,
+    anchorIndex: shiftedAnchor,
+  }
+}
+
+function resolveLinkedHoverIndex(bars: Bar[], linkedHoverOpenTime: number | null) {
+  if (!bars.length || linkedHoverOpenTime === null || !Number.isFinite(linkedHoverOpenTime)) return null
+  const index = findNearestBarIndexByOpenTime(bars, linkedHoverOpenTime)
+  return index >= 0 ? index : null
+}
+
+function getPreviewIntervals(masterInterval: string, viewInterval: string) {
+  const currentIndex = intervals.indexOf(masterInterval)
+  const picks: string[] = []
+  const add = (value?: string) => {
+    if (!value || value === viewInterval || value === masterInterval || picks.includes(value)) return
+    picks.push(value)
+  }
+
+  add(intervals[currentIndex - 1])
+  add(intervals[currentIndex + 1])
+  add(intervals[currentIndex - 2])
+  add(intervals[currentIndex + 2])
+
+  for (const item of intervals) add(item)
+  return picks.slice(0, 2)
 }
 
 function calcFetchCoverage(oldestOpenTime?: number) {
@@ -332,6 +525,13 @@ async function fetchAllKlinesIncremental(
     if (typeof endTime === 'number') url.searchParams.set('endTime', String(endTime))
 
     const res = await fetch(url.toString())
+    console.log('[SeaCat Fetch] Response', {
+      symbol,
+      interval,
+      status: res.status,
+      statusText: res.statusText,
+      retryAfter: res.headers.get('Retry-After'),
+    })
     if (res.status === 429) {
       onProgress?.({
         chunks,
@@ -344,7 +544,14 @@ async function fetchAllKlinesIncremental(
       continue
     }
 
-    if (!res.ok) throw new Error(`Binance API ${res.status}`)
+    if (!res.ok) {
+      const body = await res.text().catch(() => '')
+      const err: any = new Error(body || `Binance API ${res.status}`)
+      err.status = res.status
+      err.statusText = res.statusText
+      err.retryAfter = res.headers.get('Retry-After')
+      throw err
+    }
 
     const raw = await res.json()
     if (!Array.isArray(raw) || raw.length === 0) {
@@ -722,12 +929,20 @@ function KlineChart({
   loading,
   tradeRecords,
   currentPrice,
+  previewPanels,
+  linkedHoverOpenTime,
+  onLinkedHoverChange,
+  emptyStateText,
 }: {
   bars: Bar[]
   state: IndicatorCenterState
   loading: boolean
   tradeRecords: TradeRecord[]
   currentPrice: number
+  previewPanels?: any
+  linkedHoverOpenTime?: number | null
+  onLinkedHoverChange?: (openTime: number | null) => void
+  emptyStateText?: string
 }) {
   const [hover, setHover] = useState<HoverData>(null)
   const width = 1100
@@ -774,11 +989,16 @@ function KlineChart({
     return height - 20 - pct * (height - 40)
   }
   const xForIndex = (i: number) => padLeft + i * candleGap + 3
+  const linkedHoverIndex = resolveLinkedHoverIndex(bars, linkedHoverOpenTime ?? null)
+  const activeHoverIndex = hover ? hover.index : linkedHoverIndex
+  const activeHoverX = activeHoverIndex !== null ? xForIndex(activeHoverIndex) : null
+  const activeHoverY = hover ? hover.y : null
 
   return (
     <>
       <div className="chart-stage">
         {loading ? <div className="loading-overlay">加载 Binance 合约 K 线中…</div> : null}
+        {!loading && !bars.length && emptyStateText ? <div className="loading-overlay">{emptyStateText}</div> : null}
         <svg
           viewBox={`0 0 ${width} ${height}`}
           className="chart-svg"
@@ -800,6 +1020,7 @@ function KlineChart({
               index: idx,
               x: xForIndex(idx),
               y: py,
+              openTime: bar.openTime,
               bar,
               maValues,
               emaValues,
@@ -808,8 +1029,12 @@ function KlineChart({
               signal: typeof signal[idx] === 'number' ? (signal[idx] as number) : undefined,
               hist: typeof hist[idx] === 'number' ? (hist[idx] as number) : undefined,
             })
+            onLinkedHoverChange?.(bar.openTime)
           }}
-          onMouseLeave={() => setHover(null)}
+          onMouseLeave={() => {
+            setHover(null)
+            onLinkedHoverChange?.(null)
+          }}
         >
           <rect x="0" y="0" width={width} height={height} fill="#0b0e11" />
           {Array.from({ length: 6 }).map((_, i) => {
@@ -907,13 +1132,15 @@ function KlineChart({
             )
           })}
 
-          {hover ? (
+          {activeHoverX !== null ? (
             <g>
-              <line x1={hover.x} y1="0" x2={hover.x} y2={height} stroke="#94a3b8" strokeDasharray="4 4" strokeWidth="1" opacity="0.9" />
-              <line x1="0" y1={hover.y} x2={width} y2={hover.y} stroke="#94a3b8" strokeDasharray="4 4" strokeWidth="1" opacity="0.9" />
+              <line x1={activeHoverX} y1="0" x2={activeHoverX} y2={height} stroke="#94a3b8" strokeDasharray="4 4" strokeWidth="1" opacity="0.9" />
+              {activeHoverY !== null ? <line x1="0" y1={activeHoverY} x2={width} y2={activeHoverY} stroke="#94a3b8" strokeDasharray="4 4" strokeWidth="1" opacity="0.9" /> : null}
             </g>
           ) : null}
         </svg>
+
+        {previewPanels ? <div className="multi-preview-dock">{previewPanels}</div> : null}
 
         {hover ? (
           <div className="hover-panel">
@@ -936,7 +1163,7 @@ function KlineChart({
         <IndicatorSubcharts
           closes={closes}
           xForIndex={xForIndex}
-          hoverIndex={hover ? hover.index : null}
+          hoverIndex={activeHoverIndex}
           rsiPeriod={state.rsiPeriod}
           macdConfig={state.macdConfig}
           showRsi={state.selectedIds.includes('RSI')}
@@ -944,6 +1171,89 @@ function KlineChart({
         />
       ) : null}
     </>
+  )
+}
+
+
+function MiniPreviewChart({
+  interval,
+  bars,
+  active,
+  onClick,
+  linkedHoverOpenTime,
+  onLinkedHoverChange,
+}: {
+  interval: string
+  bars: Bar[]
+  active: boolean
+  onClick: () => void
+  linkedHoverOpenTime?: number | null
+  onLinkedHoverChange?: (openTime: number | null) => void
+}) {
+  const width = 220
+  const height = 110
+  const padX = 10
+  const padY = 10
+  const candleGap = Math.max(3.2, Math.min(6.5, (width - padX * 2) / Math.max(1, bars.length)))
+  const highs = bars.map((bar) => bar.high)
+  const lows = bars.map((bar) => bar.low)
+  const max = highs.length ? Math.max(...highs) : 1
+  const min = lows.length ? Math.min(...lows) : 0
+  const scaleY = (value: number) => {
+    const pct = (value - min) / (max - min || 1)
+    return height - padY - pct * (height - padY * 2)
+  }
+  const lastClose = bars.length ? bars[bars.length - 1].close : null
+  const prevClose = bars.length > 1 ? bars[bars.length - 2].close : null
+  const changeUp = lastClose !== null && prevClose !== null ? lastClose >= prevClose : true
+  const linkedHoverIndex = resolveLinkedHoverIndex(bars, linkedHoverOpenTime ?? null)
+
+  return (
+    <button type="button" className={active ? 'mini-preview-card active' : 'mini-preview-card'} onClick={onClick} onMouseLeave={() => onLinkedHoverChange?.(null)}>
+      <div className="mini-preview-head">
+        <span>{interval}</span>
+        <span className={changeUp ? 'up' : 'down'}>{lastClose !== null ? lastClose.toFixed(2) : '--'}</span>
+      </div>
+      {bars.length ? (
+        <svg
+          viewBox={`0 0 ${width} ${height}`}
+          className="mini-preview-svg"
+          onMouseMove={(e) => {
+            if (!bars.length) return
+            const rect = (e.currentTarget as SVGSVGElement).getBoundingClientRect()
+            const px = ((e.clientX - rect.left) / rect.width) * width
+            const idx = Math.max(0, Math.min(bars.length - 1, Math.round((px - padX - 1.5) / candleGap)))
+            onLinkedHoverChange?.(bars[idx]?.openTime ?? null)
+          }}
+        >
+          <rect x="0" y="0" width={width} height={height} fill="#050b14" />
+          {Array.from({ length: 3 }).map((_, index) => {
+            const y = padY + index * ((height - padY * 2) / 2)
+            return <line key={index} x1="0" y1={y} x2={width} y2={y} stroke="#132238" strokeWidth="1" />
+          })}
+          {linkedHoverIndex !== null ? <line x1={padX + linkedHoverIndex * candleGap + 1.5} y1="0" x2={padX + linkedHoverIndex * candleGap + 1.5} y2={height} stroke="#93c5fd" strokeDasharray="4 4" strokeWidth="1" opacity="0.9" /> : null}
+          {bars.map((bar, index) => {
+            const x = padX + index * candleGap
+            const openY = scaleY(bar.open)
+            const closeY = scaleY(bar.close)
+            const highY = scaleY(bar.high)
+            const lowY = scaleY(bar.low)
+            const up = bar.close >= bar.open
+            const bodyY = Math.min(openY, closeY)
+            const bodyH = Math.max(1.5, Math.abs(closeY - openY))
+            const color = up ? '#0ECB81' : '#F6465D'
+            return (
+              <g key={`${interval}-${index}`}>
+                <line x1={x + 1.5} y1={highY} x2={x + 1.5} y2={lowY} stroke={color} strokeWidth="1" />
+                <rect x={x} y={bodyY} width="3" height={bodyH} fill={color} rx="0.8" />
+              </g>
+            )
+          })}
+        </svg>
+      ) : (
+        <div className="mini-preview-empty">该周期暂无数据</div>
+      )}
+    </button>
   )
 }
 
@@ -968,6 +1278,8 @@ export default function TrainingPage() {
   const [isPlaying, setIsPlaying] = useState(false)
   const [replaySpeed, setReplaySpeed] = useState(2)
   const [visibleCount, setVisibleCount] = useState(120)
+  const [viewOffset, setViewOffset] = useState(0)
+  const [linkedHoverOpenTime, setLinkedHoverOpenTime] = useState<number | null>(null)
   const [initialBalance, setInitialBalance] = useState(10000)
   const [balance, setBalance] = useState(10000)
   const [orderQty, setOrderQty] = useState(0.1)
@@ -977,23 +1289,46 @@ export default function TrainingPage() {
   const [position, setPosition] = useState<PositionState | null>(null)
   const [realizedPnl, setRealizedPnl] = useState(0)
   const [tradeRecords, setTradeRecords] = useState<TradeRecord[]>([])
+  const resolvedBarsMap = useMemo(() => buildResolvedBarsMap(barsMap), [barsMap])
 
-  const masterBars = barsMap[masterInterval] ?? []
-  const viewBarsAll = barsMap[viewInterval] ?? []
+  const masterBars = resolvedBarsMap[masterInterval] ?? []
+  const viewBarsAll = resolvedBarsMap[viewInterval] ?? []
   const masterAnchorIndex = replayMode
     ? Math.max(0, Math.min(visibleCount, masterBars.length) - 1)
     : Math.max(0, masterBars.length - 1)
   const masterAnchorBar = masterBars[masterAnchorIndex] ?? null
   const masterAnchorTime = masterAnchorBar?.openTime ?? null
-  const viewEnd = replayMode
-    ? (masterAnchorTime !== null ? findBarIndexByOpenTime(viewBarsAll, masterAnchorTime) : Math.min(1, viewBarsAll.length))
-    : viewBarsAll.length
-  const viewStart = replayMode ? Math.max(0, viewEnd - DISPLAY_WINDOW) : 0
-  const replayBars = useMemo(() => {
-    if (!viewBarsAll.length) return []
-    if (!replayMode) return viewBarsAll
-    return viewBarsAll.slice(viewStart, viewEnd)
-  }, [viewBarsAll, replayMode, viewStart, viewEnd])
+  const masterProgressRatio = masterBars.length > 1 ? masterAnchorIndex / (masterBars.length - 1) : 0
+  const viewAnchorIndex = useMemo(
+    () => resolveSyncedViewIndex(viewBarsAll, masterAnchorTime, masterProgressRatio),
+    [viewBarsAll, masterAnchorTime, masterProgressRatio],
+  )
+  const syncedViewWindow = useMemo(
+    () => getSyncedWindowBars(viewBarsAll, viewAnchorIndex, replayMode, viewOffset),
+    [viewBarsAll, viewAnchorIndex, replayMode, viewOffset],
+  )
+  const masterFallbackWindow = useMemo(
+    () => getSyncedWindowBars(masterBars, masterAnchorIndex, replayMode, 0),
+    [masterBars, masterAnchorIndex, replayMode],
+  )
+  const viewUnavailable = !hasRenderableBars(syncedViewWindow.bars) || viewBarsAll.length < 2
+  const activeViewWindow = syncedViewWindow
+  const viewStart = activeViewWindow.start
+  const viewEnd = activeViewWindow.end
+  const replayBars = activeViewWindow.bars
+  const viewUnavailableMessage = viewUnavailable
+    ? `${viewInterval} 周期暂无真实数据，请先完成该周期同步后再切换。`
+    : ''
+  const previewIntervals = useMemo(() => getPreviewIntervals(masterInterval, viewInterval), [masterInterval, viewInterval])
+  const previewWindows = useMemo(() => {
+    const entries = previewIntervals.map((interval) => {
+      const previewBarsAll = resolvedBarsMap[interval] ?? []
+      const previewAnchorIndex = resolveSyncedViewIndex(previewBarsAll, masterAnchorTime, masterProgressRatio)
+      const previewWindow = getSyncedWindowBars(previewBarsAll, previewAnchorIndex, true, 0, 36)
+      return [interval, previewWindow.bars] as const
+    })
+    return Object.fromEntries(entries)
+  }, [previewIntervals, resolvedBarsMap, masterAnchorTime, masterProgressRatio])
 
   const masterCurrentPrice = masterAnchorBar?.close ?? 0
   const currentPrice = replayBars.length ? replayBars[replayBars.length - 1].close : masterCurrentPrice
@@ -1003,6 +1338,10 @@ export default function TrainingPage() {
     const loaded = sanitizeState(profiles[symbol])
     setCenterState(loaded)
   }, [profiles, symbol])
+
+  useEffect(() => {
+    setLinkedHoverOpenTime(null)
+  }, [symbol, viewInterval, masterInterval])
 
   const handleIndicatorSave = (next: IndicatorCenterState) => {
     const safe = sanitizeState(next)
@@ -1020,6 +1359,10 @@ export default function TrainingPage() {
   }, [fetchPaused])
 
   useEffect(() => {
+    purgeLegacySyntheticCaches()
+  }, [])
+
+  useEffect(() => {
     setBarsMap({})
     setFetchProgress(null)
     setDataError('')
@@ -1027,6 +1370,7 @@ export default function TrainingPage() {
     initializedMasterKeyRef.current = null
     masterAnchorSwitchRef.current = null
     setVisibleCount(120)
+    setViewOffset(0)
     setIsPlaying(false)
   }, [symbol])
 
@@ -1037,17 +1381,38 @@ export default function TrainingPage() {
     setFetchPaused(false)
 
     const ensureIntervalLoaded = async (targetInterval: string, isUiInterval: boolean) => {
-      if (barsMap[targetInterval]?.length) {
+      const directBars = barsMap[targetInterval] ?? []
+      const resolvedBars = resolvedBarsMap[targetInterval] ?? []
+      const aggregateSourceInterval = findBestAggregateSourceInterval(barsMap, targetInterval)
+      const hasUsableDirectBars = hasRenderableBars(directBars, 12)
+
+      if (hasUsableDirectBars) {
         if (isUiInterval) {
-          const cachedBars = barsMap[targetInterval]
-          const approxOldestTime = estimateOldestOpenTimeFromCount(cachedBars.length, targetInterval)
+          const approxOldestTime = estimateOldestOpenTimeFromCount(directBars.length, targetInterval)
           setLoading(false)
           setCacheStatus('remote')
           setFetchProgress({
             chunks: loadFetchMeta(symbol, targetInterval)?.chunks ?? 0,
-            bars: cachedBars.length,
+            bars: directBars.length,
             oldestOpenTime: approxOldestTime,
+            newestOpenTime: directBars[directBars.length - 1]?.openTime,
             done: calcFetchCoverage(approxOldestTime) >= 99.9,
+          })
+        }
+        return
+      }
+
+      if (aggregateSourceInterval && resolvedBars.length) {
+        if (isUiInterval) {
+          const approxOldestTime = estimateOldestOpenTimeFromCount(resolvedBars.length, targetInterval)
+          setLoading(false)
+          setCacheStatus('remote')
+          setFetchProgress({
+            chunks: 0,
+            bars: resolvedBars.length,
+            oldestOpenTime: approxOldestTime,
+            newestOpenTime: resolvedBars[resolvedBars.length - 1]?.openTime,
+            done: true,
           })
         }
         return
@@ -1055,32 +1420,35 @@ export default function TrainingPage() {
 
       const recentCached = loadKlineCache(symbol, targetInterval)
       const fullCached = loadFullKlines(symbol, targetInterval)
-      const cacheAge = recentCached ? Date.now() - recentCached.savedAt : Number.MAX_SAFE_INTEGER
-      const hasFreshCache = !!recentCached && cacheAge < KLINE_CACHE_TTL_MS
+      const usableFullCached = fullCached && hasRenderableBars(fullCached, 12) ? fullCached : null
+      const usableRecentCached = recentCached?.bars && hasRenderableBars(recentCached.bars, 12) ? recentCached : null
+      const cacheAge = usableRecentCached ? Date.now() - usableRecentCached.savedAt : Number.MAX_SAFE_INTEGER
+      const hasFreshCache = !!usableRecentCached && cacheAge < KLINE_CACHE_TTL_MS
 
       if (isUiInterval) {
         setFetchProgress(null)
-        if (!fullCached?.length && !recentCached?.bars?.length) {
+        if (!usableFullCached?.length && !usableRecentCached?.bars?.length) {
           setLoading(true)
           setCacheStatus('none')
         }
       }
 
-      if (fullCached?.length) {
-        setBarsMap((prev) => ({ ...prev, [targetInterval]: fullCached }))
+      if (usableFullCached?.length) {
+        setBarsMap((prev) => ({ ...prev, [targetInterval]: usableFullCached }))
         if (isUiInterval) {
-          const approxOldestTime = estimateOldestOpenTimeFromCount(fullCached.length, targetInterval)
+          const approxOldestTime = estimateOldestOpenTimeFromCount(usableFullCached.length, targetInterval)
           setCacheStatus('remote')
           setLoading(false)
           setFetchProgress({
             chunks: loadFetchMeta(symbol, targetInterval)?.chunks ?? 0,
-            bars: fullCached.length,
+            bars: usableFullCached.length,
             oldestOpenTime: approxOldestTime,
+            newestOpenTime: usableFullCached[usableFullCached.length - 1]?.openTime,
             done: calcFetchCoverage(approxOldestTime) >= 99.9,
           })
         }
-      } else if (recentCached?.bars?.length) {
-        setBarsMap((prev) => ({ ...prev, [targetInterval]: recentCached.bars }))
+      } else if (usableRecentCached?.bars?.length) {
+        setBarsMap((prev) => ({ ...prev, [targetInterval]: usableRecentCached.bars }))
         if (isUiInterval) {
           setCacheStatus(hasFreshCache ? 'fresh' : 'stale')
           setLoading(false)
@@ -1115,10 +1483,10 @@ export default function TrainingPage() {
         })
         .catch((err) => {
           if (cancelled || !isUiInterval) return
-          if (fullCached?.length || recentCached?.bars?.length) {
-            setDataError(`Binance 数据加载受限：${err instanceof Error ? err.message : 'unknown error'}，当前继续使用本地缓存`)
+          if (usableFullCached?.length || usableRecentCached?.bars?.length || hasUsableDirectBars || resolvedBars.length) {
+            setDataError(`Binance 数据加载受限：${err instanceof Error ? err.message : 'unknown error'}，当前仅显示已确认真实数据`)
           } else {
-            setDataError(`Binance 数据加载失败：${err instanceof Error ? err.message : 'unknown error'}`)
+            setDataError(`Binance 数据加载失败：${formatFetchError(err)}`)
           }
           setLoading(false)
         })
@@ -1127,19 +1495,22 @@ export default function TrainingPage() {
     setDataError('')
     ensureIntervalLoaded(viewInterval, true)
     if (masterInterval !== viewInterval) ensureIntervalLoaded(masterInterval, false)
+    previewIntervals.forEach((interval) => {
+      if (interval !== viewInterval && interval !== masterInterval) ensureIntervalLoaded(interval, false)
+    })
 
     return () => {
       cancelled = true
       fetchCancelledRef.current = true
     }
-  }, [symbol, viewInterval, masterInterval])
+  }, [symbol, viewInterval, masterInterval, previewIntervals, barsMap, resolvedBarsMap])
 
   useEffect(() => {
     const key = `${symbol}:${masterInterval}`
     if (!masterBars.length) return
 
     if (masterAnchorSwitchRef.current !== null) {
-      setVisibleCount(findBarIndexByOpenTime(masterBars, masterAnchorSwitchRef.current))
+      setVisibleCount(Math.max(1, findNearestBarIndexByOpenTime(masterBars, masterAnchorSwitchRef.current) + 1))
       masterAnchorSwitchRef.current = null
       initializedMasterKeyRef.current = key
       return
@@ -1174,12 +1545,15 @@ export default function TrainingPage() {
     if (visibleCount >= masterBars.length && isPlaying) setIsPlaying(false)
   }, [visibleCount, masterBars.length, isPlaying])
 
+
+  useEffect(() => {
+    if (isPlaying && viewOffset !== 0) setViewOffset(0)
+  }, [isPlaying, masterAnchorTime, viewOffset])
+
   const visibleTradeRecords = tradeRecords
     .map((record) => {
-      const entryCount = findBarIndexByOpenTime(viewBarsAll, record.entryOpenTime)
-      const entryIndex = entryCount - 1
-      const exitCount = record.exitOpenTime ? findBarIndexByOpenTime(viewBarsAll, record.exitOpenTime) : undefined
-      const exitIndex = typeof exitCount === 'number' ? exitCount - 1 : undefined
+      const entryIndex = findNearestBarIndexByOpenTime(viewBarsAll, record.entryOpenTime)
+      const exitIndex = typeof record.exitOpenTime === 'number' ? findNearestBarIndexByOpenTime(viewBarsAll, record.exitOpenTime) : undefined
       return { ...record, entryBarIndex: entryIndex, exitBarIndex: exitIndex }
     })
     .filter((record) => {
@@ -1258,6 +1632,7 @@ export default function TrainingPage() {
       ? Math.floor(Math.random() * (maxStart - minStart + 1)) + minStart
       : minStart
     setVisibleCount(next)
+    setViewOffset(0)
     setIsPlaying(false)
   }
 
@@ -1391,6 +1766,7 @@ export default function TrainingPage() {
                 className={item === viewInterval ? 'btn active compact-btn' : 'btn compact-btn'}
                 onClick={() => {
                   if (item === viewInterval) return
+                  setViewOffset(0)
                   setViewInterval(item)
                 }}
               >
@@ -1411,6 +1787,12 @@ export default function TrainingPage() {
             <div className="mode-chip ghost">观察 {viewInterval}</div>
 
             <div className="replay-toolbar header-replay-toolbar">
+              <button className="btn compact-btn" onClick={() => setViewOffset((prev) => Math.min(Math.max(0, viewBarsAll.length - 1), prev + 20))} disabled={!replayMode || !viewBarsAll.length}>
+                ←历史
+              </button>
+              <button className="btn compact-btn" onClick={() => setViewOffset(0)} disabled={viewOffset === 0}>
+                回当前
+              </button>
               <button className="btn compact-btn" onClick={handleTogglePlay} disabled={!replayMode || !viewBarsAll.length}>
                 {isPlaying ? '暂停' : '播放'}
               </button>
@@ -1483,7 +1865,30 @@ export default function TrainingPage() {
           </div>
 
           <div className="chart-wrap compact-chart-wrap">
-            <KlineChart bars={replayBars} state={centerState} loading={loading} tradeRecords={visibleTradeRecords} currentPrice={currentPrice} />
+            <KlineChart
+              bars={replayBars}
+              state={centerState}
+              loading={loading}
+              tradeRecords={visibleTradeRecords}
+              currentPrice={currentPrice}
+              linkedHoverOpenTime={linkedHoverOpenTime}
+              onLinkedHoverChange={setLinkedHoverOpenTime}
+              emptyStateText={viewUnavailableMessage}
+              previewPanels={previewIntervals.map((interval) => (
+                <MiniPreviewChart
+                  key={interval}
+                  interval={interval}
+                  bars={(previewWindows[interval] as Bar[] | undefined) ?? []}
+                  active={interval === viewInterval}
+                  linkedHoverOpenTime={linkedHoverOpenTime}
+                  onLinkedHoverChange={setLinkedHoverOpenTime}
+                  onClick={() => {
+                    setViewOffset(0)
+                    setViewInterval(interval)
+                  }}
+                />
+              ))}
+            />
           </div>
 
           <div className="trade-ui-right metrics-below">
